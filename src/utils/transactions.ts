@@ -1,10 +1,10 @@
 import { WalletClient } from 'viem';
-import type { 
-  Account, 
-  Chain, 
-  Transport, 
+import type {
+  Account,
+  Chain,
+  Transport,
   TransactionRequest,
-  Hash 
+  Hash
 } from 'viem';
 
 export interface BridgeTransactionData {
@@ -25,24 +25,24 @@ export interface BridgeTransactionData {
  */
 export function formatBridgeTransaction(transactionData: BridgeTransactionData): TransactionRequest {
   console.log('Raw Transaction Data:', JSON.stringify(transactionData, null, 2));
-  
+
   const formattedTx: TransactionRequest = {
     to: transactionData.to as `0x${string}`,
     data: transactionData.data as `0x${string}`,
   };
-  
+
   if (transactionData.value) {
     formattedTx.value = BigInt(transactionData.value);
   }
-  
+
   if (transactionData.gas) {
     formattedTx.gas = BigInt(transactionData.gas);
   }
-  
+
   if (transactionData.nonce) {
     formattedTx.nonce = Number(transactionData.nonce);
   }
-  
+
   // Choose between legacy gas price or EIP-1559 fee params
   if (transactionData.gasPrice) {
     formattedTx.gasPrice = BigInt(transactionData.gasPrice);
@@ -50,12 +50,12 @@ export function formatBridgeTransaction(transactionData: BridgeTransactionData):
     if (transactionData.maxFeePerGas) {
       formattedTx.maxFeePerGas = BigInt(transactionData.maxFeePerGas);
     }
-    
+
     if (transactionData.maxPriorityFeePerGas) {
       formattedTx.maxPriorityFeePerGas = BigInt(transactionData.maxPriorityFeePerGas);
     }
   }
-  
+
   console.log('Formatted Transaction Parameters:', {
     to: formattedTx.to,
     data: formattedTx.data,
@@ -66,7 +66,7 @@ export function formatBridgeTransaction(transactionData: BridgeTransactionData):
     maxPriorityFeePerGas: formattedTx.maxPriorityFeePerGas?.toString(),
     nonce: formattedTx.nonce,
   });
-  
+
   return formattedTx;
 }
 
@@ -85,7 +85,7 @@ export async function signAndSendTransaction(
     });
 
     console.log('Raw Transaction Data:', JSON.stringify(transactionData, null, 2));
-    
+
     // Convert string values to appropriate types
     const params: Record<string, any> = {
       account: walletClient.account,
@@ -96,7 +96,7 @@ export async function signAndSendTransaction(
     if (transactionData.value) params.value = BigInt(transactionData.value);
     if (transactionData.gas) params.gas = BigInt(transactionData.gas);
     if (transactionData.nonce) params.nonce = Number(transactionData.nonce);
-    
+
     // Gas settings
     if (transactionData.gasPrice) {
       params.gasPrice = BigInt(transactionData.gasPrice);
@@ -108,7 +108,7 @@ export async function signAndSendTransaction(
         params.maxPriorityFeePerGas = BigInt(transactionData.maxPriorityFeePerGas);
       }
     }
-    
+
     console.log('Sending transaction with params:', {
       ...params,
       value: params.value?.toString(),
@@ -117,12 +117,12 @@ export async function signAndSendTransaction(
       maxFeePerGas: params.maxFeePerGas?.toString(),
       maxPriorityFeePerGas: params.maxPriorityFeePerGas?.toString(),
     });
-    
+
     // Send transaction using the wallet client
     const hash = await walletClient.sendTransaction(params);
-    
+
     console.log('Transaction hash:', hash);
-    
+
     return { hash };
   } catch (error) {
     console.error('Transaction error:', error);

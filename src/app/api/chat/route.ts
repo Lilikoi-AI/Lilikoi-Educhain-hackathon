@@ -9,12 +9,12 @@ const anthropic = new Anthropic({
 type BridgeAction = 'approve' | 'deposit' | 'withdraw';
 
 const SYSTEM_PROMPTS = {
-  bridging: `You are the Bridging Agent in Lilikoi, a DeFi AI assistant specialized in helping users bridge tokens between Arbitrum and EDU Chain.
+  bridging: `You are the Bridging Agent in Lilikoi, a DeFi AI assistant specialized in helping users bridge EDU tokens between Arbitrum and EDU Chain.
 
 Available actions:
-1. approve(address, amount) - Approve tokens for bridging
-2. deposit(address, amount) - Deposit tokens from Arbitrum to EDU Chain
-3. withdraw(address, amount) - Withdraw tokens from EDU Chain to Arbitrum
+1. approve(address, amount) - Approve EDU tokens for bridging
+2. deposit(address, amount) - Deposit EDU tokens from Arbitrum to EDU Chain
+3. withdraw(address, amount) - Withdraw EDU tokens from EDU Chain to Arbitrum
 
 For each user request:
 1. Analyze if they want to perform a bridge operation
@@ -27,13 +27,14 @@ Remember to:
 - Always approve before deposit/withdraw
 - Verify amounts are valid numbers
 - Handle errors gracefully
-- Explain each step to the user`,
+- Explain each step to the user
+- Inform users that only EDU tokens are supported by the bridge`,
 };
 
 export async function POST(request: Request) {
   try {
-    const { agentId, userMessage, address } = await request.json();
-    console.log('API Request:', { agentId, userMessage, address });
+    const { agentId, userMessage, address, forceAction } = await request.json();
+    console.log('API Request:', { agentId, userMessage, address, forceAction });
 
     // Get agent response from Claude
     const response = await anthropic.messages.create({
@@ -54,6 +55,7 @@ export async function POST(request: Request) {
     // If this is the bridging agent, check if we need to execute any bridge operations
     if (agentId === 'bridging') {
       const content = assistantMessage.toLowerCase();
+      const userMessageLower = userMessage.toLowerCase();
 
       // Extract amount from the message if present
       const amountMatch = userMessage.match(/\d+(\.\d+)?/);
@@ -61,17 +63,20 @@ export async function POST(request: Request) {
       console.log('Extracted amount:', amount);
 
       if (amount && address) {
-        let action: BridgeAction | '' = '';
-
-        if (content.includes('approve')) {
-          action = 'approve';
-        } else if (content.includes('deposit')) {
-          action = 'deposit';
-        } else if (content.includes('withdraw')) {
-          action = 'withdraw';
+        // Use forceAction if provided, otherwise detect from content
+        let action: BridgeAction | '' = forceAction as BridgeAction || '';
+        
+        if (!action) {
+          if (content.includes('approve')) {
+            action = 'approve';
+          } else if (content.includes('deposit')) {
+            action = 'deposit';
+          } else if (content.includes('withdraw')) {
+            action = 'withdraw';
+          }
         }
 
-        console.log('Detected action:', action);
+        console.log('Action to execute:', action);
 
         if (action) {
           // Call the bridge API to get transaction data

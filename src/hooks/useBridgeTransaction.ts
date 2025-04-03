@@ -49,34 +49,59 @@ export function useBridgeTransaction() {
       setStatus(TransactionStatus.PENDING);
       console.log('Transaction status: PENDING');
 
-      // Convert values to appropriate types
+      // Ensure data is properly formatted
+      let formattedData = transactionData.data;
+      if (!formattedData.startsWith('0x')) {
+        formattedData = `0x${formattedData}`;
+      }
+
+      // Basic transaction parameters
       const txParams: any = {
         account: address as `0x${string}`,
         to: transactionData.to as `0x${string}`,
-        data: transactionData.data as `0x${string}`,
+        data: formattedData as `0x${string}`,
       };
 
-      if (transactionData.value) {
-        txParams.value = BigInt(transactionData.value);
+      // Handle value if present
+      if (transactionData.value && transactionData.value !== '0' && transactionData.value !== '0x0') {
+        try {
+          txParams.value = BigInt(transactionData.value);
+        } catch (error) {
+          console.warn('Invalid value format:', transactionData.value);
+        }
       }
 
-      // Add gas if present or use default
+      // Handle gas parameters
       if (transactionData.gas) {
-        txParams.gas = BigInt(transactionData.gas);
+        try {
+          // Remove '0x' prefix if present for BigInt conversion
+          const gasValue = transactionData.gas.replace('0x', '');
+          txParams.gas = BigInt(gasValue);
+        } catch (error) {
+          console.warn('Invalid gas format:', transactionData.gas);
+          // Use a safe default gas limit
+          txParams.gas = BigInt(300000);
+        }
       } else {
         // Default gas limit if not provided
-        txParams.gas = BigInt(2000000);
+        txParams.gas = BigInt(300000);
       }
 
+      // Handle nonce if present
       if (transactionData.nonce) {
-        txParams.nonce = Number(transactionData.nonce);
+        try {
+          txParams.nonce = Number(transactionData.nonce);
+        } catch (error) {
+          console.warn('Invalid nonce format:', transactionData.nonce);
+        }
       }
 
-      // Log the final params that will be sent to the wallet
+      // Log the final transaction parameters
       console.log('Sending transaction with params:', {
         ...txParams,
         value: txParams.value?.toString(),
         gas: txParams.gas?.toString(),
+        data: txParams.data,
       });
 
       // Send transaction

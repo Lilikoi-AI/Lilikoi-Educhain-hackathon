@@ -19,6 +19,8 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [currentTransaction, setCurrentTransaction] = useState<BridgeTransactionData | null>(null);
+  const [bridgeStep, setBridgeStep] = useState<'approve' | 'deposit' | 'withdraw' | null>(null);
+  const [lastUserMessage, setLastUserMessage] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { address, isConnected } = useAccount();
   const {
@@ -28,6 +30,7 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
     isSuccess,
     isError,
     isPending,
+    reset,
   } = useBridgeTransaction();
 
   const scrollToBottom = () => {
@@ -38,34 +41,59 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
     scrollToBottom();
   }, [messages]);
 
-  // Watch for transaction status changes
+  // Watch for transaction status changes and handle sequence
   useEffect(() => {
-    if (currentTransaction) {
+    if (currentTransaction && bridgeStep) {
       if (isSuccess) {
         setMessages((prev) => [
           ...prev,
           {
             role: 'system',
-            content: `✅ Transaction successful! Hash: ${txResult.hash}`,
+            content: `✅ ${bridgeStep.charAt(0).toUpperCase() + bridgeStep.slice(1)} transaction successful! Hash: ${txResult.hash}`,
           },
         ]);
-        setCurrentTransaction(null);
+
+        // If approve was successful, automatically proceed with deposit
+        if (bridgeStep === 'approve') {
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: 'system',
+              content: '🔄 Automatically proceeding with deposit...',
+            },
+          ]);
+          
+          // Reset transaction state
+          reset();
+          setCurrentTransaction(null);
+          
+          // Trigger deposit with forceAction
+          handleSubmit(new Event('submit') as any, true, 'deposit');
+        } else {
+          // Reset states after other transactions
+          setBridgeStep(null);
+          setCurrentTransaction(null);
+          setLastUserMessage('');
+        }
       } else if (isError) {
         setMessages((prev) => [
           ...prev,
           {
             role: 'system',
-            content: `❌ Transaction failed: ${txResult.error}`,
+            content: `❌ ${bridgeStep.charAt(0).toUpperCase() + bridgeStep.slice(1)} transaction failed: ${txResult.error}`,
           },
         ]);
+        setBridgeStep(null);
         setCurrentTransaction(null);
+        setLastUserMessage('');
       }
     }
-  }, [txStatus, txResult, isSuccess, isError, currentTransaction]);
+  }, [txStatus, txResult, isSuccess, isError, currentTransaction, bridgeStep]);
 
   // Parse transaction data from API response
-  const handleTransactionData = (data: any) => {
+  const handleTransactionData = (data: any, action: string) => {
     console.log('Received transaction data from API:', data);
+    console.log('Action:', action);
 
     if (!data) {
       console.error('No transaction data received');
@@ -98,8 +126,9 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
 
       console.log('Formatted transaction data for wallet:', JSON.stringify(txData, null, 2));
 
-      // Save current transaction and execute
+      // Save current transaction, action, and execute
       setCurrentTransaction(txData);
+      setBridgeStep(action as any);
       console.log('Executing transaction with wallet client');
       executeTransaction(txData);
 
@@ -122,13 +151,20 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent, isAutomatic: boolean = false, forceAction?: string) => {
     e.preventDefault();
-    if (!input.trim() || isLoading || !isConnected || isPending) return;
+    
+    // Use stored message for automatic transactions, otherwise use input
+    const userMessage = isAutomatic ? lastUserMessage : input.trim();
+    
+    if ((!userMessage && !isAutomatic) || isLoading || !isConnected || isPending) return;
 
-    const userMessage = input.trim();
-    setInput('');
-    setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
+    if (!isAutomatic) {
+      setInput('');
+      setLastUserMessage(userMessage);
+      setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
+    }
+    
     setIsLoading(true);
 
     try {
@@ -136,6 +172,7 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
         agentId,
         userMessage,
         address,
+        forceAction,
       });
 
       const response = await fetch('/api/chat', {
@@ -147,6 +184,7 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
           agentId,
           userMessage,
           address,
+          forceAction,
         }),
       });
 
@@ -157,16 +195,18 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
       const data = await response.json();
       console.log('API response:', data);
 
-      // Add the assistant message
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: data.content },
-      ]);
+      // Add the assistant message only if not automatic
+      if (!isAutomatic) {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: data.content },
+        ]);
+      }
 
       // Check if there's any transaction data to process
       if (data.transactionData && agentId === 'bridging') {
         console.log('Transaction data received, processing...');
-        handleTransactionData(data.transactionData);
+        handleTransactionData(data.transactionData, data.action);
       } else {
         console.log('No transaction data in response');
       }
