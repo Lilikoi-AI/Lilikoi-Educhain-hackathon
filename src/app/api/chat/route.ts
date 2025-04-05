@@ -23,8 +23,12 @@ For each user request:
 4. Explain what you're going to do before doing it
 5. Execute the action and report results
 
+Be very precise about detecting the direction of the bridge:
+- If they specifically mention "from EDU Chain to Arbitrum" or "withdraw" - use withdraw action
+- If they mention "from Arbitrum to EDU Chain" or just "bridge" - start with approve action
+
 Remember to:
-- Always approve before deposit/withdraw
+- Always approve before deposit
 - Verify amounts are valid numbers
 - Handle errors gracefully
 - Explain each step to the user
@@ -67,12 +71,23 @@ export async function POST(request: Request) {
         let action: BridgeAction | '' = forceAction as BridgeAction || '';
         
         if (!action) {
-          if (content.includes('approve')) {
+          // First check for withdraw mentions in user message (EDU Chain -> Arbitrum)
+          if (
+            userMessageLower.includes('withdraw') || 
+            userMessageLower.includes('from edu') || 
+            userMessageLower.includes('from educhain') || 
+            userMessageLower.includes('to arbitrum') ||
+            userMessageLower.includes('edu to arb')
+          ) {
+            action = 'withdraw';
+          } 
+          // Otherwise check Claude's response
+          else if (content.includes('withdraw')) {
+            action = 'withdraw';
+          } else if (content.includes('approve')) {
             action = 'approve';
           } else if (content.includes('deposit')) {
             action = 'deposit';
-          } else if (content.includes('withdraw')) {
-            action = 'withdraw';
           }
         }
 
