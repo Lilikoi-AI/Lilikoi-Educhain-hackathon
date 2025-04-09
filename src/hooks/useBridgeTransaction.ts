@@ -49,18 +49,38 @@ export function useBridgeTransaction() {
       setStatus(TransactionStatus.PENDING);
       console.log('Transaction status: PENDING');
 
-      // Ensure data is properly formatted
-      let formattedData = transactionData.data;
-      if (!formattedData.startsWith('0x')) {
-        formattedData = `0x${formattedData}`;
+      // *** Improved Data Handling ***
+      let formattedData = transactionData.data; 
+      console.log('[executeTransaction] Initial transactionData.data:', formattedData); // Log initial value
+
+      // Check if data is a valid string before using startsWith
+      if (typeof formattedData === 'string' && formattedData.length > 0) { // Check length too
+          if (!formattedData.startsWith('0x')) {
+            console.log('[executeTransaction] Adding 0x prefix to data');
+            formattedData = `0x${formattedData}`;
+          }
+      } else {
+          // Handle missing, null, empty string, or non-string data
+          console.warn(`[executeTransaction] transactionData.data is invalid (${typeof formattedData}, value: ${formattedData}), setting to '0x'`);
+          formattedData = '0x'; // Default to empty data if invalid
       }
+      // *** End Improved Data Handling ***
 
       // Basic transaction parameters
       const txParams: any = {
         account: address as `0x${string}`,
-        to: transactionData.to as `0x${string}`,
-        data: formattedData as `0x${string}`,
+        // Add validation for 'to' address as well
+        to: (typeof transactionData.to === 'string' && transactionData.to.startsWith('0x')) 
+            ? transactionData.to as `0x${string}` 
+            : undefined, // Set to undefined if invalid
+        data: formattedData as `0x${string}`, // Use the potentially modified formattedData
       };
+      
+      // Ensure 'to' address is valid before proceeding
+      if (txParams.to === undefined) {
+           console.error("[executeTransaction] Invalid or missing 'to' address in transactionData:", transactionData.to);
+           throw new Error("Transaction data is missing or contains an invalid destination ('to') address.");
+      }
 
       // Handle value if present
       if (transactionData.value && transactionData.value !== '0' && transactionData.value !== '0x0') {
@@ -101,7 +121,8 @@ export function useBridgeTransaction() {
         ...txParams,
         value: txParams.value?.toString(),
         gas: txParams.gas?.toString(),
-        data: txParams.data,
+        // Log first part of data for brevity if long
+        data: txParams.data.length > 100 ? txParams.data.substring(0, 98) + '...' : txParams.data,
       });
 
       // Send transaction

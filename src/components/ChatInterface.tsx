@@ -1,45 +1,341 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useAccount } from 'wagmi';
-import { useBridgeTransaction, TransactionStatus } from '@/hooks/useBridgeTransaction';
-import { BridgeTransactionData } from '@/hooks/useBridgeTransaction';
+import { useBridgeTransaction, TransactionStatus, BridgeTransactionData } from '@/hooks/useBridgeTransaction';
+
+// Define Chain Info & Explorer URLs
+const EDUCHAIN_CHAIN_ID = 41923;
+const ARBITRUM_CHAIN_ID = 42161;
+const EXPLORER_URLS: { [key: number]: { name: string; url: string } } = {
+    [EDUCHAIN_CHAIN_ID]: { name: "EDU Chain Explorer", url: "https://eduscan.live/tx/" },
+    [ARBITRUM_CHAIN_ID]: { name: "Arbiscan", url: "https://arbiscan.io/tx/" },
+};
 
 interface Message {
   role: 'user' | 'assistant' | 'system';
-  content: string | JSX.Element;
-  timestamp?: string;
+  content: string | React.ReactNode;
+  timestamp: string;
 }
 
 interface ChatInterfaceProps {
   agentId: string;
 }
 
+// Define actions that happen on EDU Chain
+const EDU_CHAIN_ACTIONS: Set<string> = new Set([
+  'withdraw', // Bridge from EDU Chain
+  'wrap_edu',
+  'unwrap_wedu',
+  'send_edu', // Assuming sends are on EDU Chain
+  'send_erc20_token', // Assuming sends are on EDU Chain
+  'swap_tokens', // Assuming swaps happen on EDU Chain DEX
+  'swap_edu_for_tokens', // Assuming swaps happen on EDU Chain DEX
+  'swap_tokens_for_edu' // Assuming swaps happen on EDU Chain DEX
+]);
+
+// Define actions that happen on Arbitrum
+const ARBITRUM_ACTIONS: Set<string> = new Set([
+  'approve', // Bridge approval on Arbitrum
+  'deposit' // Bridge deposit from Arbitrum
+]);
+
 export function ChatInterface({ agentId }: ChatInterfaceProps) {
+  // --- 1. State Variables --- 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [currentTransaction, setCurrentTransaction] = useState<BridgeTransactionData | null>(null);
-  const [bridgeStep, setBridgeStep] = useState<'approve' | 'deposit' | 'withdraw' | null>(null);
+  const [bridgeStep, setBridgeStep] = useState<string | null>(null);
   const [lastUserMessage, setLastUserMessage] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const { address, isConnected } = useAccount();
+  const [pendingTxData, setPendingTxData] = useState<BridgeTransactionData | null>(null);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [pendingChainId, setPendingChainId] = useState<number | null>(null); 
+  const [pendingAmount, setPendingAmount] = useState<string | null>(null);
+
+  // --- 2. Hooks --- 
+  const { address, isConnected, chain } = useAccount(); 
   const {
     executeTransaction,
     status: txStatus,
     result: txResult,
+    isPending: isTxLoading,
     isSuccess,
     isError,
-    isPending,
     reset,
   } = useBridgeTransaction();
 
+  // --- 3. Utility Functions --- 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  // Add welcome message when component mounts
+  const getCurrentTime = useCallback(() => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), []);
+  
+  const formatTransactionMessage = useCallback((action: string, txHash: string, chainId: number | null) => {
+    const explorer = chainId ? EXPLORER_URLS[chainId] : null;
+    const explorerLink = explorer && txHash ? `${explorer.url}${txHash}` : '#';
+    const explorerName = explorer ? explorer.name : 'Block Explorer';
+    const chainName = explorer ? explorer.name.replace(' Explorer','').replace('scan','') : null;
+    return (
+      <div className="flex flex-col space-y-2">
+        <p className="text-green-400">✅ {action.replace(/_/g, ' ').charAt(0).toUpperCase() + action.replace(/_/g, ' ').slice(1)} transaction successful{chainName ? ` on ${chainName}` : ''}!</p>
+        {txHash && explorer && (
+          <a href={explorerLink} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline text-sm">
+            View on {explorerName}
+          </a>
+        )}
+      </div>
+    );
+  }, []);
+
+  const formatErrorMessage = useCallback((action: string, errorMsg: string) => {
+      return (
+          <p className="text-red-400">❌ Error during {action.replace(/_/g, ' ')}: {errorMsg}</p>
+      );
+  }, []);
+
+  const formatPendingMessage = useCallback((chainId: number | null) => {
+     const targetNetwork = chainId ? EXPLORER_URLS[chainId]?.name.replace(' Explorer','').replace('scan','') : null;
+     return (
+         <p className="text-yellow-400">
+             ⏳ Please confirm the transaction in your wallet.
+             {targetNetwork && ` Ensure your wallet is connected to the ${targetNetwork} network (ID: ${chainId}).`}
+         </p>
+     );
+  }, []);
+
+  // --- 4. State Clearing Function --- 
+  const clearPendingState = useCallback(() => {
+      setPendingTxData(null);
+      setPendingAction(null);
+      setPendingChainId(null);
+      setPendingAmount(null);
+      reset(); 
+  }, [reset]);
+
+  // --- 5. Transaction Execution Function (Accept Args) --- 
+  const runTransaction = useCallback((txData: BridgeTransactionData, action: string, chainId: number | null) => {
+    // Check passed arguments instead of state
+    if (txData && action) {
+        console.log('[runTransaction] Attempting transaction:', action, 'Target Chain:', chainId);
+        
+        setMessages((prev) => [
+            ...prev,
+            // Pass chainId from argument
+            { role: 'system', content: formatPendingMessage(chainId), timestamp: getCurrentTime() },
+        ]);
+
+        try {
+            executeTransaction(txData); // Use passed txData
+            console.log('[runTransaction] executeTransaction called for:', action);
+        } catch (error) {
+            console.error(`[runTransaction] Immediate error calling executeTransaction for ${action}:`, error);
+            setMessages((prev) => [
+                ...prev,
+                { role: 'system', content: formatErrorMessage(action, `Failed to initiate transaction: ${(error as Error).message}`), timestamp: getCurrentTime() },
+            ]);
+            clearPendingState(); 
+        }
+    } else {
+        console.error("[runTransaction] Aborted: Missing txData or action argument.");
+    }
+  // Remove state dependencies, use function dependencies
+  }, [executeTransaction, getCurrentTime, formatPendingMessage, formatErrorMessage, clearPendingState, setMessages]); 
+
+  // --- 6. Submission Handler (Pass Args to runTransaction) --- 
+  const handleSubmit = useCallback(async (e: React.FormEvent<HTMLFormElement> | Event, isAutoTrigger = false, forcedAction: string | null = null) => {
+    if (e) e.preventDefault();
+    const messageToSend = isAutoTrigger ? lastUserMessage : input;
+    if (!messageToSend.trim() || isLoading || !isConnected) return;
+
+    const newUserMessage: Message = {
+      role: 'user',
+      content: messageToSend,
+      timestamp: getCurrentTime()
+    };
+    setMessages((prev) => [...prev, newUserMessage]);
+    if (!isAutoTrigger) setInput('');
+    setIsLoading(true);
+    setLastUserMessage(messageToSend); 
+    clearPendingState(); 
+    setCurrentTransaction(null); 
+    setBridgeStep(null); 
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId, userMessage: messageToSend, address: address, forceAction: forcedAction }),
+      });
+      const data = await response.json();
+      setIsLoading(false);
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      if (data.content) {
+          setMessages((prev) => [
+              ...prev,
+              { role: 'assistant', content: data.content, timestamp: getCurrentTime() },
+          ]);
+      }
+
+      if (data.transactionData && data.action && data.targetChainId) {
+        const targetChainId = data.targetChainId as number;
+        const action = data.action as string;
+        console.log('[TRANSACTION PREP] Action:', action, 'Target Chain:', targetChainId);
+        console.log('[TRANSACTION PREP] ToolInput:', data.toolInput); // Debug toolInput
+        
+        const txData: BridgeTransactionData = { 
+             from: address as string, 
+             to: data.transactionData.to,
+             data: data.transactionData.data,
+             value: data.transactionData.value,
+             gas: data.transactionData.gas || '2000000', 
+             gasPrice: data.transactionData.gasPrice,
+             maxFeePerGas: data.transactionData.maxFeePerGas,
+             maxPriorityFeePerGas: data.transactionData.maxPriorityFeePerGas,
+             nonce: data.transactionData.nonce,
+        };
+
+        // *** Store amount if action is approve ***
+        if (action === 'approve' && data.toolInput?.amount) { // Assuming API returns toolInput
+            setPendingAmount(data.toolInput.amount as string);
+            console.log('Stored pending amount for deposit:', data.toolInput.amount);
+        } else if (action === 'approve') {
+            // Fallback or error if amount missing for approve
+            console.error("Amount missing from toolInput for approve action!");
+            // Handle error appropriately - maybe don't proceed?
+        }
+        
+        // Set pending state (txData, action, chainId) ...
+        setPendingTxData(txData);
+        setPendingAction(action);
+        setPendingChainId(targetChainId); 
+        setCurrentTransaction(txData); 
+        setBridgeStep(action as any); 
+        
+        // Call runTransaction directly (no network switch)
+        console.log(`Proceeding to request transaction signature on wallet (User must ensure correct network: ${targetChainId})`);
+        runTransaction(txData, action, targetChainId); 
+      }
+
+    } catch (error) {
+        console.error('API Error:', error);
+        setIsLoading(false);
+        setMessages((prev) => [
+          ...prev,
+          { role: 'system', content: formatErrorMessage('API Error', (error as Error).message), timestamp: getCurrentTime() },
+        ]);
+        clearPendingState(); 
+    }
+  }, [agentId, input, isLoading, isConnected, address, lastUserMessage, runTransaction, clearPendingState, reset, getCurrentTime, formatErrorMessage]); 
+
+  // --- 7. Auto-Deposit Trigger Function --- 
+  const triggerDeposit = useCallback(async () => {
+      if (!pendingAmount) {
+          console.error("Cannot trigger deposit: pending amount not found.");
+          setMessages((prev) => [
+            ...prev, { role: 'system', content: formatErrorMessage('Deposit', 'Cannot proceed with deposit: approved amount not found.'), timestamp: getCurrentTime() }
+          ]);
+          clearPendingState(); // Clear other state
+          return;
+      }
+      if (!address) {
+           console.error("Cannot trigger deposit: address not found.");
+           return; // Should not happen if approve worked
+      }
+
+      console.log(`Automatically triggering deposit for amount: ${pendingAmount}`);
+      setIsLoading(true); // Show loading for the backend call
+      // Reset parts of state before the new API call, keep amount
+      setPendingTxData(null);
+      setPendingAction(null); // Action will be set by response
+      setPendingChainId(null); // ChainId will be set by response
+      reset(); // Reset wagmi state
+      
+      try {
+         const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                agentId: 'bridging', // Hardcode for bridging context
+                userMessage: `Automatic deposit trigger after approve for ${pendingAmount} EDU.`, // Context msg
+                address: address,
+                forceAction: 'deposit', // Force the deposit action
+                amount: pendingAmount, // Send the stored amount
+            }),
+        });
+        const data = await response.json();
+        setIsLoading(false);
+
+        if (data.error) throw new Error(data.error);
+
+        // Add assistant message (if any)
+        if (data.content) {
+            setMessages((prev) => [
+              ...prev, { role: 'assistant', content: data.content, timestamp: getCurrentTime() }
+            ]);
+        }
+        
+        // Handle the returned transaction data for deposit
+        if (data.transactionData && data.action === 'deposit' && data.targetChainId) {
+            const targetChainId = data.targetChainId as number;
+            const action = data.action as string;
+            console.log('[Deposit Trigger] Raw transactionData received:', data.transactionData);
+            
+            // Properly map transaction data
+            const txData: BridgeTransactionData = { 
+                from: address as string, 
+                to: data.transactionData.to,
+                data: data.transactionData.data,
+                value: data.transactionData.value || '0x0',
+                gas: data.transactionData.gas || '2000000', 
+                gasPrice: data.transactionData.gasPrice,
+                maxFeePerGas: data.transactionData.maxFeePerGas,
+                maxPriorityFeePerGas: data.transactionData.maxPriorityFeePerGas,
+                nonce: data.transactionData.nonce,
+            };
+            
+            console.log('[Deposit Trigger] Received action:', action, 'Target Chain:', targetChainId);
+            console.log('[Deposit Trigger] Transaction data:', txData);
+            
+            // Set pending state for deposit
+            setPendingTxData(txData);
+            setPendingAction(action);
+            setPendingChainId(targetChainId);
+            setCurrentTransaction(txData);
+            setBridgeStep(action as any);
+            
+            // Run the deposit transaction
+            runTransaction(txData, action, targetChainId);
+        } else {
+             console.error("[Deposit Trigger] API response missing data for deposit:", data);
+             throw new Error("Failed to get deposit transaction data from backend.");
+        }
+
+      } catch (error) {
+          console.error('[Deposit Trigger] API Error:', error);
+          setIsLoading(false);
+          setMessages((prev) => [
+            ...prev, { role: 'system', content: formatErrorMessage('Deposit', (error as Error).message), timestamp: getCurrentTime() }
+          ]);
+          clearPendingState(); // Clear all state on error
+      }
+      
+  }, [address, pendingAmount, agentId, reset, clearPendingState, runTransaction, getCurrentTime, formatErrorMessage]);
+
+  // --- 8. useEffect Hooks --- 
+  // Effect to scroll messages
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  // Effect for initial welcome message
   useEffect(() => {
     const welcomeMessages: Message[] = [
       {
@@ -55,15 +351,55 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
     }
   }, [agentId]);
 
-  // Scroll to bottom when messages change
+  // Effect to focus input
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    inputRef.current?.focus();
+  }, []);
 
-  // Get current formatted time
-  const getCurrentTime = () => {
-    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
+  // Effect to handle transaction status updates (Success/Error)
+  useEffect(() => {
+    if (pendingAction && pendingChainId !== null) { 
+      if (isSuccess) {
+        const currentAction = pendingAction; 
+        const currentChainId = pendingChainId;
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'system',
+            content: formatTransactionMessage(currentAction, txResult.hash || '', currentChainId), 
+            timestamp: getCurrentTime()
+          },
+        ]);
+
+        // *** Call triggerDeposit instead of handleSubmit ***
+        if (currentAction === 'approve') {
+           console.log('Approve successful, automatically triggering deposit...');
+           // Don't clear state here, triggerDeposit handles its own state management
+           triggerDeposit(); 
+        } else {
+          // Clear state for other successful txs (like deposit, withdraw, send etc)
+          clearPendingState(); 
+          setBridgeStep(null);
+          setCurrentTransaction(null);
+          setLastUserMessage('');
+        }
+      } else if (isError) {
+        const currentAction = pendingAction;
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'system',
+            content: formatErrorMessage(currentAction, txResult.error || 'Unknown error'), 
+            timestamp: getCurrentTime()
+          },
+        ]);
+        clearPendingState();
+        setBridgeStep(null);
+        setCurrentTransaction(null);
+        setLastUserMessage('');
+      }
+    }
+  }, [txStatus, txResult, isSuccess, isError, pendingAction, pendingChainId, reset, clearPendingState, formatTransactionMessage, formatErrorMessage, getCurrentTime, setMessages, setBridgeStep, setCurrentTransaction, setLastUserMessage, triggerDeposit]); // Removed handleSubmit, added triggerDeposit
 
   // Get welcome message based on agent type
   const getWelcomeMessage = (id: string) => {
@@ -77,274 +413,6 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
       default:
         return "Hello! How can I help you today?";
     }
-  };
-
-  // Format transaction status messages
-  const formatTransactionMessage = (step: string, hash: string) => {
-    // Use EDU Chain explorer for withdraw transactions, Arbitrum explorer for others
-    const explorerUrl = step === 'withdraw' 
-      ? `https://educhain.blockscout.com/tx/${hash}`  // EDU Chain explorer
-      : `https://arbiscan.io/tx/${hash}`;             // Arbitrum explorer
-    
-    const chainName = step === 'withdraw' ? 'EDU Chain' : 'Arbitrum';
-    
-    return (
-      <div className="flex flex-col">
-        <div className="flex items-center mb-1.5">
-          <div className="text-green-400 mr-2">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-            </svg>
-          </div>
-          <span className="font-medium text-green-400">{step.charAt(0).toUpperCase() + step.slice(1)} transaction successful</span>
-        </div>
-        <a 
-          href={explorerUrl} 
-          target="_blank" 
-          rel="noopener noreferrer"
-          className="text-xs text-purple-400 hover:text-purple-300 underline break-all pl-6"
-        >
-          View on {chainName} explorer
-        </a>
-      </div>
-    );
-  };
-
-  // Format transaction error messages
-  const formatErrorMessage = (step: string, error: string) => {
-    return (
-      <div className="flex flex-col">
-        <div className="flex items-center mb-1.5">
-          <div className="text-red-400 mr-2">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-            </svg>
-          </div>
-          <span className="font-medium text-red-400">Transaction failed</span>
-        </div>
-        <div className="text-xs text-red-300/70 pl-6 line-clamp-2">
-          {error}
-        </div>
-      </div>
-    );
-  };
-
-  // Format pending transaction message
-  const formatPendingMessage = () => {
-    return (
-      <div className="flex items-center">
-        <span className="text-gray-300">Confirm in your wallet...</span>
-      </div>
-    );
-  };
-
-  // Format auto-proceeding message
-  const formatAutoDepositMessage = () => {
-    return (
-      <div className="flex items-center">
-        <div className="mr-2 w-4 h-4 relative flex justify-center items-center">
-          <div className="absolute w-4 h-4 rounded-full border-2 border-purple-400 border-t-transparent"></div>
-        </div>
-        <span className="text-purple-400">Automatically processing deposit...</span>
-      </div>
-    );
-  };
-
-  // Watch for transaction status changes and handle sequence
-  useEffect(() => {
-    if (currentTransaction && bridgeStep) {
-      if (isSuccess) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'system',
-            content: formatTransactionMessage(bridgeStep, txResult.hash || ''),
-            timestamp: getCurrentTime()
-          },
-        ]);
-
-        // If approve was successful, automatically proceed with deposit
-        if (bridgeStep === 'approve') {
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: 'system',
-              content: formatAutoDepositMessage(),
-              timestamp: getCurrentTime()
-            },
-          ]);
-          
-          // Reset transaction state
-          reset();
-          setCurrentTransaction(null);
-          
-          // Trigger deposit with forceAction
-          handleSubmit(new Event('submit') as any, true, 'deposit');
-        } else {
-          // Reset states after other transactions
-          setBridgeStep(null);
-          setCurrentTransaction(null);
-          setLastUserMessage('');
-        }
-      } else if (isError) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'system',
-            content: formatErrorMessage(bridgeStep, txResult.error || 'Unknown error'),
-            timestamp: getCurrentTime()
-          },
-        ]);
-        setBridgeStep(null);
-        setCurrentTransaction(null);
-        setLastUserMessage('');
-      }
-    }
-  }, [txStatus, txResult, isSuccess, isError, currentTransaction, bridgeStep]);
-
-  // Parse transaction data from API response
-  const handleTransactionData = (data: any, action: string) => {
-    console.log('Received transaction data from API:', data);
-    console.log('Action:', action);
-
-    if (!data) {
-      console.error('No transaction data received');
-      return;
-    }
-
-    try {
-      // Parse the transaction data if it's a string
-      const parsedData = typeof data === 'string' ? JSON.parse(data) : data;
-      console.log('Parsed transaction data:', parsedData);
-
-      // Create transaction data object
-      const txData: BridgeTransactionData = {
-        from: address as string,
-        to: parsedData.to,
-        data: parsedData.data,
-        value: parsedData.value,
-        chainId: parsedData.chainId,
-        gas: parsedData.gas || '2000000', // Default gas if not provided
-        gasPrice: parsedData.gasPrice,
-        maxFeePerGas: parsedData.maxFeePerGas,
-        maxPriorityFeePerGas: parsedData.maxPriorityFeePerGas,
-        nonce: parsedData.nonce,
-      };
-
-      // Validate 'to' address has 0x prefix
-      if (!txData.to || !txData.to.startsWith('0x')) {
-        throw new Error('Invalid "to" address. Must be a valid hex address with 0x prefix.');
-      }
-
-      console.log('Formatted transaction data for wallet:', JSON.stringify(txData, null, 2));
-
-      // Save current transaction, action, and execute
-      setCurrentTransaction(txData);
-      setBridgeStep(action as any);
-      console.log('Executing transaction with wallet client');
-      executeTransaction(txData);
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'system',
-          content: formatPendingMessage(),
-          timestamp: getCurrentTime()
-        },
-      ]);
-    } catch (error) {
-      console.error('Error parsing transaction data:', error);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'system',
-          content: `Failed to process transaction: ${(error as Error).message}`,
-          timestamp: getCurrentTime()
-        },
-      ]);
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent, isAutomatic: boolean = false, forceAction?: string) => {
-    e.preventDefault();
-    
-    // Use stored message for automatic transactions, otherwise use input
-    const userMessage = isAutomatic ? lastUserMessage : input.trim();
-    
-    if ((!userMessage && !isAutomatic) || isLoading || !isConnected || isPending) return;
-
-    if (!isAutomatic) {
-      setInput('');
-      setLastUserMessage(userMessage);
-      setMessages((prev) => [...prev, { 
-        role: 'user', 
-        content: userMessage,
-        timestamp: getCurrentTime()
-      }]);
-    }
-    
-    setIsLoading(true);
-
-    try {
-      console.log('Sending message to API:', {
-        agentId,
-        userMessage,
-        address,
-        forceAction,
-      });
-
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          agentId,
-          userMessage,
-          address,
-          forceAction,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to get response');
-      }
-
-      const data = await response.json();
-      console.log('API response:', data);
-
-      // Add the assistant message only if not automatic
-      if (!isAutomatic) {
-        setMessages((prev) => [
-          ...prev,
-          { 
-            role: 'assistant', 
-            content: data.content,
-            timestamp: getCurrentTime()
-          },
-        ]);
-      }
-
-      // Check if there's any transaction data to process
-      if (data.transactionData && agentId === 'bridging') {
-        console.log('Transaction data received, processing...');
-        handleTransactionData(data.transactionData, data.action);
-      } else {
-        console.log('No transaction data in response');
-      }
-    } catch (error) {
-      console.error('API request error:', error);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: 'Sorry, I encountered an error. Please try again.',
-          timestamp: getCurrentTime()
-        },
-      ]);
-    }
-
-    setIsLoading(false);
   };
 
   // Render loading indicator
@@ -417,21 +485,21 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
 
       {/* Input area */}
       <div className="border-t border-gray-800 p-4">
-        <form onSubmit={(e) => handleSubmit(e)} className="flex space-x-2 items-center">
+        <form onSubmit={handleSubmit} className="flex space-x-2 items-center">
           <input
             ref={inputRef}
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={isConnected ? "Type your message..." : "Connect wallet to continue"}
-            disabled={!isConnected || isPending}
+            disabled={!isConnected || isLoading || isTxLoading}
             className="flex-1 bg-gray-800 rounded-full py-2.5 px-4 text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-purple-500 border border-gray-700 transition-colors"
           />
           <button
             type="submit"
-            disabled={!input.trim() || !isConnected || isLoading || isPending}
+            disabled={!input.trim() || !isConnected || isLoading || isTxLoading}
             className={`p-2.5 rounded-full focus:outline-none transition-colors
-              ${!input.trim() || !isConnected || isLoading || isPending
+              ${!input.trim() || !isConnected || isLoading || isTxLoading
                 ? 'bg-gray-800 text-gray-600'
                 : 'bg-purple-600 text-white hover:bg-purple-500'
               }`}

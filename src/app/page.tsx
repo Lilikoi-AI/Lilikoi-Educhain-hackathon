@@ -4,21 +4,33 @@ const agents = [
   {
     id: 'bridging',
     name: 'Bridging Agent',
-    description: 'Bridge tokens between chains',
+    description: 'Bridge EDU between Arbitrum & EDU Chain',
     icon: '🌉',
   },
   {
-    id: 'lp',
-    name: 'LP Provisioning Agent',
-    description: 'Manage liquidity positions',
-    icon: '💧',
+    id: 'transaction',
+    name: 'Transaction Agent',
+    description: 'Send EDU or ERC20 tokens on EDU Chain / Arbitrum',
+    icon: '💸',
+  },
+  {
+    id: 'dex',
+    name: 'DEX Agent',
+    description: 'Swap, wrap, or get quotes on EDU Chain DEX',
+    icon: '📈',
   },
   {
     id: 'utility',
-    name: 'Utility Agent',
-    description: 'General DeFi operations',
+    name: 'Utility & Info Agent',
+    description: 'Check balances, prices, TVL, etc.',
     icon: '🛠️',
   },
+  // {
+  //   id: 'lp',
+  //   name: 'LP Provisioning Agent',
+  //   description: 'Manage liquidity positions',
+  //   icon: '💧',
+  // },
 ];
 
 export default function Home() {

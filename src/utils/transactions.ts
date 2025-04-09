@@ -4,7 +4,8 @@ import type {
   Chain,
   Transport,
   TransactionRequest,
-  Hash
+  Hash,
+  SendTransactionParameters
 } from 'viem';
 
 export interface BridgeTransactionData {
@@ -86,40 +87,64 @@ export async function signAndSendTransaction(
 
     console.log('Raw Transaction Data:', JSON.stringify(transactionData, null, 2));
 
-    // Convert string values to appropriate types
-    const params: Record<string, any> = {
+    // Ensure we have a valid account
+    if (!walletClient.account) {
+      throw new Error('Wallet client has no active account');
+    }
+
+    // Prepare base transaction parameters
+    const txParams: SendTransactionParameters = {
       account: walletClient.account,
+      chain: walletClient.chain,
       to: transactionData.to as `0x${string}`,
       data: transactionData.data as `0x${string}`,
     };
 
-    if (transactionData.value) params.value = BigInt(transactionData.value);
-    if (transactionData.gas) params.gas = BigInt(transactionData.gas);
-    if (transactionData.nonce) params.nonce = Number(transactionData.nonce);
+    // Add optional parameters
+    if (transactionData.value) {
+      txParams.value = BigInt(transactionData.value);
+    }
+    
+    if (transactionData.gas) {
+      txParams.gas = BigInt(transactionData.gas);
+    }
+    
+    if (transactionData.nonce) {
+      txParams.nonce = Number(transactionData.nonce);
+    }
 
     // Gas settings
     if (transactionData.gasPrice) {
-      params.gasPrice = BigInt(transactionData.gasPrice);
+      txParams.gasPrice = BigInt(transactionData.gasPrice);
     } else {
       if (transactionData.maxFeePerGas) {
-        params.maxFeePerGas = BigInt(transactionData.maxFeePerGas);
+        txParams.maxFeePerGas = BigInt(transactionData.maxFeePerGas);
       }
+      
       if (transactionData.maxPriorityFeePerGas) {
-        params.maxPriorityFeePerGas = BigInt(transactionData.maxPriorityFeePerGas);
+        txParams.maxPriorityFeePerGas = BigInt(transactionData.maxPriorityFeePerGas);
       }
     }
 
+    // Safe display of parameters for logging
+    const accountAddress = typeof walletClient.account === 'string' 
+      ? walletClient.account 
+      : (walletClient.account.address || '');
+    
     console.log('Sending transaction with params:', {
-      ...params,
-      value: params.value?.toString(),
-      gas: params.gas?.toString(),
-      gasPrice: params.gasPrice?.toString(),
-      maxFeePerGas: params.maxFeePerGas?.toString(),
-      maxPriorityFeePerGas: params.maxPriorityFeePerGas?.toString(),
+      to: txParams.to,
+      data: txParams.data,
+      account: accountAddress ? `${accountAddress.slice(0, 6)}...${accountAddress.slice(-4)}` : null,
+      value: txParams.value?.toString(),
+      gas: txParams.gas?.toString(),
+      gasPrice: txParams.gasPrice?.toString(),
+      maxFeePerGas: txParams.maxFeePerGas?.toString(),
+      maxPriorityFeePerGas: txParams.maxPriorityFeePerGas?.toString(),
+      nonce: txParams.nonce,
     });
 
     // Send transaction using the wallet client
-    const hash = await walletClient.sendTransaction(params);
+    const hash = await walletClient.sendTransaction(txParams);
 
     console.log('Transaction hash:', hash);
 

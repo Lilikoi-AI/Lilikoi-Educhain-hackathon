@@ -5,12 +5,23 @@ import { ConnectKitButton } from 'connectkit';
 import { useState, useEffect } from 'react';
 import { ChatInterface } from '@/components/ChatInterface';
 import Link from 'next/link';
+import React from 'react';
 
 const agentInfo = {
   bridging: {
     name: 'Bridging Agent',
     description: 'Bridge EDU tokens between Arbitrum and EDU Chain',
     icon: '🌉',
+  },
+  transaction: {
+    name: 'Transaction Agent',
+    description: 'Send native EDU or ERC20 tokens on EDU Chain or Arbitrum',
+    icon: '💸',
+  },
+  dex: {
+    name: 'DEX Agent',
+    description: 'Swap, wrap, or unwrap tokens on the EDU Chain DEX',
+    icon: '🔄',
   },
   lp: {
     name: 'LP Provisioning Agent',
@@ -24,10 +35,19 @@ const agentInfo = {
   },
 };
 
-export default function AgentPage() {
-  const params = useParams();
+// Define the expected shape of the params object
+interface AgentPageParams {
+  id: string; // The dynamic segment from the URL, e.g., "bridging", "transaction"
+}
+
+// Define the props for the Page component
+interface AgentPageProps {
+  params: AgentPageParams;
+}
+
+export default function Page({ params }: AgentPageProps) {
   const router = useRouter();
-  const agentId = params.id as string;
+  const agentId = params.id;
   const agent = agentInfo[agentId as keyof typeof agentInfo];
   
   // Redirect to bridging if invalid agent
@@ -38,6 +58,31 @@ export default function AgentPage() {
   }, [agent, router]);
 
   if (!agent) return null;
+
+  // Determine agent title or configuration based on ID (optional)
+  const getAgentTitle = (id: string) => {
+    switch(id.toLowerCase()) {
+      case 'bridging': return 'Bridging Agent';
+      case 'transaction': return 'Transaction Agent';
+      case 'dex': return 'DEX Agent';
+      case 'lp': return 'LP Provisioning Agent';
+      case 'utility': return 'Utility Agent';
+      default: return 'DeFi Agent'; // Fallback title
+    }
+  };
+  const agentTitle = getAgentTitle(agentId);
+
+  // Determine description (optional)
+  const getAgentDescription = (id: string) => {
+      switch(id.toLowerCase()) {
+        case 'bridging': return 'Bridge EDU tokens between Arbitrum and EDU Chain.';
+        case 'transaction': return 'Send native EDU or ERC20 tokens on EDU Chain or Arbitrum.';
+        case 'dex': return 'Swap, wrap, or unwrap tokens on the EDU Chain DEX.';
+        // Add descriptions for other agents
+        default: return 'Your assistant for DeFi tasks.';
+      }
+    };
+  const agentDescription = getAgentDescription(agentId);
 
   return (
     <main className="min-h-screen bg-black text-white">
@@ -70,13 +115,10 @@ export default function AgentPage() {
           ))}
         </div>
         
-        {/* Agent Description */}
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold mb-1 flex items-center">
-            <span className="mr-2 text-3xl">{agent.icon}</span>
-            {agent.name}
-          </h1>
-          <p className="text-gray-400">{agent.description}</p>
+        {/* Display dynamic title and description */}
+        <div className="mb-6 text-center md:text-left">
+            <h1 className="text-3xl font-bold mb-2 text-white">{agentTitle}</h1>
+            <p className="text-gray-400">{agentDescription}</p>
         </div>
         
         {/* Chat Interface */}
