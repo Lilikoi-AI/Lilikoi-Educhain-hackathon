@@ -1,4 +1,4 @@
-# Lilikoi 🌸 - Your AI-Powered DeFi Brain
+# Lilikoi  - Your AI-Powered DeFi Brain
 
 [![Lilikoi Logo](<public/Lilikoi%20Logo%20(4).svg>)](https://example.com)
 
