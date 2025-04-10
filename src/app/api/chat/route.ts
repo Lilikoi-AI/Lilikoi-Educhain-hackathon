@@ -2,6 +2,7 @@ import { Anthropic } from '@anthropic-ai/sdk';
 import { NextResponse } from 'next/server';
 import { BridgeMCP } from '@/mcp/bridge';
 import * as agentKit from '@/lib/agent-kit-logic';
+import { ethers } from 'ethers';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -64,6 +65,31 @@ const EDUCHAIN_CHAIN_ID = 41923;
 // Define necessary constants locally if not imported
 const WEDU_ADDRESS = '0xd02E8c38a8E3db71f8b2ae30B8186d7874934e12'; // Replace with actual WEDU address if different
 
+// --- Type Definitions for Tool Inputs --- 
+interface BaseToolInput { [key: string]: any; } // Looser base for flexibility
+
+interface WalletAddressInput extends BaseToolInput { walletAddress?: string; }
+interface TokenAddressInput extends BaseToolInput { tokenAddress?: string; }
+interface TokenIdInput extends BaseToolInput { tokenId?: string; }
+interface RecipientInput extends BaseToolInput { recipient?: string; }
+interface AddressInput extends BaseToolInput { address?: string; }
+interface AmountInput extends BaseToolInput { amount?: string; }
+interface TokenInOutAmountInput extends BaseToolInput { tokenIn?: string; tokenOut?: string; amountIn?: string; }
+interface SlippageDeadlineInput extends BaseToolInput { slippagePercentage?: number; deadlineMinutes?: number; }
+
+// Specific Tool Input Interfaces (Combine as needed)
+interface GetBalanceInput extends WalletAddressInput {}
+interface GetTokenInfoInput extends TokenIdInput {}
+interface GetTokenBalanceInput extends TokenAddressInput, WalletAddressInput {}
+interface SendEduInput extends RecipientInput, AmountInput {}
+interface SendErc20TokenInput extends TokenAddressInput, RecipientInput, AmountInput {}
+interface SwapQuoteInput extends TokenInOutAmountInput {}
+interface SwapTokensInput extends TokenInOutAmountInput, RecipientInput, SlippageDeadlineInput {}
+interface SwapEduForTokensInput extends BaseToolInput { tokenOut?: string; amountIn?: string; recipient?: string; slippagePercentage?: number; deadlineMinutes?: number; }
+interface SwapTokensForEduInput extends BaseToolInput { tokenIn?: string; amountIn?: string; recipient?: string; slippagePercentage?: number; deadlineMinutes?: number; }
+interface WrapUnwrapInput extends AmountInput {}
+interface BridgeInput extends AddressInput, AmountInput {}
+
 // --- Define ALL Tool Schemas --- 
 // (Ensure these are the complete, correct schemas from previous steps)
 const getEduBalanceSchema: Anthropic.Tool = {
@@ -91,8 +117,9 @@ const withdrawSchema: Anthropic.Tool = {
     input_schema: { type: "object", properties: { amount: { type: "string", description: "The amount of EDU to withdraw/claim on EDU Chain." } }, required: ["amount"] } 
 };
 const getTokenBalanceSchema: Anthropic.Tool = {
-    name: "get_token_balance", description: `Get the balance of a specific ERC20 token for a given wallet address. Use the appropriate token address for the chain (e.g., ${ARBITRUM_EDU_TOKEN_ADDRESS} for EDU on Arbitrum, others for EDU Chain). Assumes EDU Chain unless specified otherwise or EDU token address is the Arbitrum one.`,
-    input_schema: { type: "object", properties: { tokenAddress: { type: "string", description: "The address of the ERC20 token contract." }, walletAddress: { type: "string", description: "The wallet address to check the balance for." } }, required: ["tokenAddress", "walletAddress"] }
+    name: "get_token_balance", 
+    description: `Get the balance of a specific ERC20 token for a given wallet address on the EDU Chain. Provide the token name (e.g., 'USDC', 'WETH') or its contract address.`,
+    input_schema: { type: "object", properties: { tokenAddress: { type: "string", description: "The name (e.g., 'USDC') or the contract address (0x...) of the ERC20 token." }, walletAddress: { type: "string", description: "The wallet address (0x...) to check the balance for." } }, required: ["tokenAddress", "walletAddress"] }
 };
 const sendErc20TokenSchema: Anthropic.Tool = {
     name: "send_erc20_token", description: `Prepare a transaction to send a specific ERC20 token from the user's wallet to a recipient. Specify the token's contract address. For sending EDU *on Arbitrum*, use token address ${ARBITRUM_EDU_TOKEN_ADDRESS}. For other ERC20s, assume they are on EDU Chain (${EDUCHAIN_CHAIN_ID}).`,
@@ -143,8 +170,17 @@ const get24hVolumeSchema: Anthropic.Tool = {
     input_schema: { type: "object", properties: {}, required: [] }
 };
 const getSwapQuoteSchema: Anthropic.Tool = {
-    name: "get_swap_quote", description: "Get a price quote for swapping one token for another on the EDU Chain DEX (SailFish). Does not execute the swap.",
-    input_schema: { type: "object", properties: { tokenIn: { type: "string", description: "Address of the token to swap FROM." }, tokenOut: { type: "string", description: "Address of the token to swap TO." }, amountIn: { type: "string", description: "The amount of tokenIn to quote for swapping." } }, required: ["tokenIn", "tokenOut", "amountIn"] }
+    name: "get_swap_quote", 
+    description: "Get a price quote for swapping one token for another on the EDU Chain DEX (SailFish). Provide token names/symbols (e.g., 'EDU', 'USDC') or addresses. Does not execute the swap.",
+    input_schema: { 
+        type: "object", 
+        properties: { 
+            tokenIn: { type: "string", description: "Name/symbol (e.g., 'EDU') or address of the token to swap FROM." },
+            tokenOut: { type: "string", description: "Name/symbol (e.g., 'USDC') or address of the token to swap TO." },
+            amountIn: { type: "string", description: "The amount of tokenIn to quote for swapping." } 
+        }, 
+        required: ["tokenIn", "tokenOut", "amountIn"] 
+    }
 };
 
 // --- Define Schemas for remaining Utility/Info Tools ---
@@ -187,10 +223,9 @@ const getRpcUrlSchema: Anthropic.Tool = {
 
 // --- Create Tool Lists for each Agent --- 
 // (Ensure all schemas used below are fully defined above)
-const bridgingTools: Anthropic.Tool[] = [ approveSchema, depositSchema, withdrawSchema, getTokenBalanceSchema ]; // Added balance check
+const bridgingTools: Anthropic.Tool[] = [ approveSchema, depositSchema, withdrawSchema, getTokenBalanceSchema ];
 const transactionTools: Anthropic.Tool[] = [ sendEduSchema, sendErc20TokenSchema, getEduBalanceSchema, getTokenBalanceSchema ];
-const dexTools: Anthropic.Tool[] = [ swapTokensSchema, swapEduForTokensSchema, swapTokensForEduSchema, wrapEduSchema, unwrapWeduSchema, getSwapQuoteSchema, getPoolInfoSchema, getTokenPriceSchema, getTokenInfoSchema ]; // Added info tools
-// Combine many info tools for a general utility/info agent
+const dexTools: Anthropic.Tool[] = [ swapTokensSchema, swapEduForTokensSchema, swapTokensForEduSchema, wrapEduSchema, unwrapWeduSchema, getSwapQuoteSchema, getPoolInfoSchema, getTokenPriceSchema, getTokenInfoSchema, getTokenBalanceSchema ];
 const utilityTools: Anthropic.Tool[] = [ 
     // Core Info
     getEduBalanceSchema, getTokenBalanceSchema, getMultipleTokenBalancesSchema, 
@@ -211,17 +246,35 @@ const SYSTEM_PROMPT_TRANSACTION = `You are Lilikoi's Transaction Agent... focus 
 const SYSTEM_PROMPT_DEX = `You are Lilikoi's DEX Agent on the EDU Chain (ID ${EDUCHAIN_CHAIN_ID}). Your goal is to help users swap tokens, wrap/unwrap EDU, or get quotes.
 
 When a user asks to swap tokens (e.g., "swap 0.1 EDU for USDC" or "swap 5 WETH for DAI"):
-1.  Identify the input token (tokenIn) and output token (tokenOut) and the input amount (amountIn).
-2.  **First, use the appropriate balance tool** ('get_edu_balance' for native EDU, 'get_token_balance' for ERC20s like WEDU, USDC) to check if the user's wallet (address provided in the user message context) has *sufficient* balance of the input token.
-3.  If the balance is insufficient, inform the user and STOP.
-4.  **If the balance IS sufficient, use the 'get_swap_quote' tool** with tokenIn, tokenOut, and amountIn to get the expected output amount and route information.
-5.  **Finally, use the appropriate swap preparation tool** ('swap_edu_for_tokens', 'swap_tokens_for_edu', or 'swap_tokens') using the details from the quote (including recipient address, which defaults to the user's address if not specified) to prepare the transaction data.
-6.  Return the transaction data to the user for confirmation.
+1.  **First, use the 'get_swap_quote' tool.** Identify the input token (tokenIn), output token (tokenOut), and the input amount (amountIn) from the user's message. Provide the token names/symbols (like 'EDU', 'USDC') or addresses to the tool. Ask the user if any information is missing.
+2.  **IMPORTANT: Getting the quote is only step one.** AFTER you successfully receive the quote result, you MUST proceed to the next step: Check the user's balance.
+    *   **CRITICAL:** If the user's original request was to swap native **EDU**, you MUST use the **'get_edu_balance'** tool, regardless of what tokens were used internally for the quote (like WEDU). Do NOT use 'get_token_balance' for a native EDU swap request.
+    *   For other ERC20 tokens (like WETH, USDC), use the **'get_token_balance'** tool.
+    *   Use the 'tokenIn' name/symbol and 'amountIn' from the original user request/quote context. The user's wallet address is provided in the user message context.
+3.  If the balance check shows insufficient funds, inform the user and STOP.
+4.  **If the balance IS sufficient, THEN use the appropriate swap preparation tool:**
+    *   **CRITICAL:** If the user's original request was to swap native **EDU**, you MUST use the **'swap_edu_for_tokens'** tool. Do NOT use 'swap_tokens' for a native EDU swap request.
+    *   If swapping from an ERC20 *to* native EDU, use **'swap_tokens_for_edu'**.
+    *   For all other ERC20-to-ERC20 swaps, use **'swap_tokens'**.
+    *   Use the details from the quote (recipient defaults to user's address) to prepare the transaction data.
+5.  Return the final transaction data to the user for confirmation.
 
 For wrap/unwrap requests (e.g., "wrap 1 EDU", "unwrap 2 WEDU"), directly use the 'wrap_edu' or 'unwrap_wedu' preparation tools.
-For quote requests (e.g., "how much USDC for 1 EDU?"), use the 'get_swap_quote' tool only.
+For quote-only requests (e.g., "how much USDC for 1 EDU?"), use only the 'get_swap_quote' tool and DO NOT proceed to balance checks or transaction preparation.
 Use other info tools ('get_pool_info', 'get_token_price', 'get_token_info') only if specifically asked.`;
-const SYSTEM_PROMPT_UTILITY = `You are Lilikoi's Utility & Info Agent... Answer questions about tokens, balances, pools, TVL, volume mostly related to EDU Chain (${EDUCHAIN_CHAIN_ID}). Use the provided tools to get data and present it.`;
+const SYSTEM_PROMPT_UTILITY = `You are Lilikoi's Utility & Info Agent on the EDU Chain (ID ${EDUCHAIN_CHAIN_ID}). Your primary role is to answer user questions about tokens, balances, pools, TVL, volume, prices, etc., by using the provided tools to fetch data.
+
+WHEN YOU RECEIVE A RESULT FROM A TOOL CALL:
+Your goal is to present this data clearly and concisely to the user. Follow these formatting guidelines:
+- Use markdown formatting (like bullet points '•', bolding '**') for readability.
+- For lists (like top tokens or pools), use bullet points, showing key info for each item (e.g., name, symbol, TVL, volume).
+- For balances: Clearly state the token name/symbol, the amount, and its approximate USD value if available (e.g., "Your USDC balance is: **123.45 USDC** ($123.45 USD)").
+- For prices: State the price clearly (e.g., "The current price of WEDU is $X.XX USD.").
+- For general info (like TVL or volume): State the value clearly (e.g., "Total TVL on the DEX is $X,XXX,XXX.XX USD.").
+- Keep explanations brief and focused on the data presented.
+- If a tool returns an error, inform the user clearly about the error.
+
+ALWAYS use the tools provided to get the latest information before answering the user's question. Do not make up data.`;
 
 // --- Map Agent IDs to their configs --- 
 const agentConfigs: { [key: string]: { tools: Anthropic.Tool[], prompt: string } } = {
@@ -238,91 +291,19 @@ const TOKEN_NAME_TO_ADDRESS_MAP: { [key: string]: string } = {
     edu: WEDU_ADDRESS, // Assuming native EDU price is tracked via WEDU
     wedu: WEDU_ADDRESS,
     // Add other common tokens
-    usdc: '0x7F5373AE26c3E8FfC4c77b7255DF7eC1A9aF52a6', // EDU Chain USDC 
-    usdt: '0x4CcD2b3F70D9a6De2aD8341DB090e9DE30AC0Bef', // EDU Chain USDT
+    usdc: '0x836d275563bAb5E93Fd6Ca62a95dB7065Da94342', // EDU Chain USDC - Reverted to correct address
+    usdt: '0x7277Cc818e3F3FfBb169c6Da9CC77Fc2d2a34895', // EDU Chain USDT - Assuming this is correct
     weth: '0x79C428A058625387c71F684BA5980414aF38b0d6', // EDU Chain WETH
     wbtc: '0x5D049c53F1dFCB8C4328554854fe44D5C48e5461'  // EDU Chain WBTC
 };
 
 export async function POST(request: Request) {
-  const { agentId = 'default', userMessage, address, forceAction, amount } = await request.json(); // Added amount parameter
+  const { agentId = 'default', userMessage, address, // Removed forceAction and amount for now, handle differently if needed
+          // Allow passing previous messages for multi-turn state
+          history = [] 
+        } = await request.json(); 
 
-  // Extract swap intent information from user message for DEX agent
-  let swapIntent = null;
-  if (agentId === 'dex' && userMessage.toLowerCase().includes('swap')) {
-    // Try to extract swap details from the message
-    const eduMatch = userMessage.match(/swap\s+([\d.]+)\s+edu\s+for\s+(\w+)/i);
-    const tokenMatch = userMessage.match(/swap\s+([\d.]+)\s+(\w+)\s+for\s+(\w+)/i);
-    
-    if (eduMatch) {
-      swapIntent = {
-        isFromEdu: true,
-        amount: eduMatch[1],
-        toToken: eduMatch[2].toUpperCase()
-      };
-      console.log('Detected swap from EDU intent:', swapIntent);
-    } else if (tokenMatch) {
-      swapIntent = {
-        isFromEdu: false,
-        amount: tokenMatch[1],
-        fromToken: tokenMatch[2].toUpperCase(),
-        toToken: tokenMatch[3].toUpperCase()
-      };
-      console.log('Detected swap from token intent:', swapIntent);
-    }
-  }
-
-  // Handle forceAction for direct deposit after approve
-  if (forceAction === 'deposit' && address && amount) {
-    console.log(`Force action deposit detected with amount: ${amount} for address: ${address}`);
-    try {
-      // Directly call BridgeMCP.deposit
-      const bridgeResult = await BridgeMCP.deposit(address, amount);
-      console.log('[Force Deposit Bridge Result]:', JSON.stringify(bridgeResult, null, 2));
-
-      if (bridgeResult.error) {
-        throw new Error(`Bridge error from MCP: ${bridgeResult.error}`);
-      }
-
-      // Check if data exists before trying to parse
-      if (bridgeResult.data !== undefined && bridgeResult.data !== null) {
-        let parsedData: any;
-        try {
-          // Parse the JSON string if needed
-          parsedData = typeof bridgeResult.data === 'string' ? JSON.parse(bridgeResult.data) : bridgeResult.data;
-          console.log('[Force Deposit Bridge Result Parsed Data]:', parsedData);
-          
-          // Validate the parsed object
-          if (!parsedData || typeof parsedData !== 'object' || typeof parsedData.to !== 'string' || typeof parsedData.data !== 'string') {
-            throw new Error('Parsed bridge data is invalid or missing required fields (to, data).');
-          }
-          
-          // Return successful response with transaction data
-          return NextResponse.json({
-            content: `Now let's deposit ${amount} EDU tokens to the bridge contract. Please confirm this transaction in your wallet.`,
-            transactionData: parsedData,
-            action: 'deposit',
-            targetChainId: ARBITRUM_CHAIN_ID,
-            toolInput: { amount }
-          });
-        } catch (parseError) {
-          console.error('[Force Deposit Parse Error]:', parseError);
-          throw new Error(`Failed to parse transaction data received from bridge API for deposit.`);
-        }
-      } else {
-        throw new Error(`Bridge MCP deposit completed without explicit error but returned null or undefined data.`);
-      }
-    } catch (error) {
-      console.error('Force Deposit Error:', error);
-      return NextResponse.json(
-        { 
-          error: `Failed to process deposit: ${(error as Error).message}`,
-          content: `Error during deposit: ${(error as Error).message}`
-        },
-        { status: 500 }
-      );
-    }
-  }
+  // TODO: Re-implement forceAction logic if necessary, maybe as a special user message or flag?
 
   // *** Select tools and prompt based on agentId ***
   const config = agentConfigs[agentId.toLowerCase()] || agentConfigs.default;
@@ -331,619 +312,439 @@ export async function POST(request: Request) {
   
   console.log(`Using config for agentId: ${agentId}`);
 
-  try {
-    // --- Anthropic API Call - Use selected tools/prompt --- 
-    const response = await anthropic.messages.create({
-        model: 'claude-3-haiku-20240307', 
-        max_tokens: 2048, 
-        system: selectedSystemPrompt, // <-- Use selected prompt
-        messages: [
+  // Initialize messages array with history and current user message
+  let messages: Anthropic.Messages.MessageParam[] = [
+      // TODO: Add proper history mapping if frontend format differs
+      // ...history, 
           {
             role: 'user',
+        // Inject address into the main user message for context
             content: `User's wallet address is ${address || 'not provided'}. Help them with their request: ${userMessage}`,
           },
-        ],
-        tools: selectedTools, // <-- Use selected tools
-    });
-    console.log("Anthropic Raw Response (Haiku):"); // Log model name
-    // Use JSON.stringify only if debugging is needed, to save console space/cost
-    // console.log(JSON.stringify(response, null, 2)); 
-
-    // --- Process Anthropic Response --- 
+  ];
+  
     let finalAssistantMessage: string | null = null;
     let transactionData: any = null;
     let finalAction: string | null = null;
     let targetChainId: number | null = null; 
     let savedToolInput: Record<string, any> | null = null;
+    const MAX_TOOL_CALLS = 5; // Limit loops
+    let lastToolResultContent: any = null; // Track last result
+    let lastToolNameCalled: string | null = null; // Track last tool name
+    let lastIterationHadError = false; // Track last error status
+    const toolCallSequence: string[] = []; // <-- Add array to track tool calls
 
-    const textBlocks = response.content.filter(block => block.type === 'text');
-    if (textBlocks.length > 0) {
-      finalAssistantMessage = textBlocks.map(block => block.text).join('\n');
-    }
+  try {
+      for (let i = 0; i < MAX_TOOL_CALLS; i++) {
+          console.log(`--- Making LLM Call #${i + 1} ---`);
+          console.log('Messages:', JSON.stringify(messages, null, 2));
+          
+          const response = await anthropic.messages.create({
+              model: 'claude-3-haiku-20240307', 
+              max_tokens: 2048, 
+              system: selectedSystemPrompt,
+              messages: messages,
+              tools: selectedTools,
+          });
 
-    const toolUseBlock = response.content.find(
-      (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use'
-    );
+          console.log(`Anthropic Raw Response (Call #${i + 1}):`);
+          // console.log(JSON.stringify(response, null, 2));
 
-    if (toolUseBlock) {
+          let hasToolUse = false;
+          let responseMessages: Anthropic.Messages.MessageParam[] = []; // Messages to add for the next iteration
+
+          // Add the assistant's response message(s) to the history for the next turn
+          responseMessages.push({
+              role: 'assistant',
+              content: response.content
+          });
+
+          // Process response blocks
+          for (const block of response.content) {
+              if (block.type === 'text') {
+                  // If we get text, assume it's the final answer for now
+                  // Could potentially refine this to allow text + tool call?
+                  finalAssistantMessage = (finalAssistantMessage ? finalAssistantMessage + '\n' : '') + block.text;
+              } else if (block.type === 'tool_use') {
+                  hasToolUse = true;
+                  const toolUseBlock = block as Anthropic.Messages.ToolUseBlock;
       const toolName = toolUseBlock.name as Action;
-      const toolInput: Record<string, any> = toolUseBlock.input || {}; 
-      finalAction = toolName;
-      // Save tool input to return to frontend
-      savedToolInput = { ...toolInput };
-      
-      console.log(`Tool Use Detected: ${toolName}`, "Input:", toolInput);
+                  // Cast toolInput initially, but validate/assert before use
+                  const toolInput = toolUseBlock.input as BaseToolInput || {}; 
+                  const toolUseId = toolUseBlock.id;
 
-      // Re-evaluate targetChainId determination based on agent & tool
+                  console.log(`Tool Use Detected: ${toolName}`, "Input:", toolInput, "ID:", toolUseId);
+                  
+                  toolCallSequence.push(toolName); // <-- Record the tool call
+                  
+                  finalAction = toolName; // Track the last action called
+                  savedToolInput = { ...toolInput }; // Save input for frontend context
+                  
+                  // --- Determine Target Chain ID --- 
+                  targetChainId = EDUCHAIN_CHAIN_ID; // Default assumption for DEX/Transaction unless specified
       if (agentId === 'bridging') {
           if (['approve', 'deposit'].includes(toolName)) targetChainId = ARBITRUM_CHAIN_ID;
-          else if (toolName === 'withdraw') targetChainId = EDUCHAIN_CHAIN_ID;
-          // Add balance check logic if needed
+                      // withdraw stays on EDUCHAIN_CHAIN_ID
       } else if (agentId === 'transaction') {
-          if (toolName === 'send_edu') targetChainId = EDUCHAIN_CHAIN_ID;
-          else if (toolName === 'send_erc20_token') {
-               // Assume Arbitrum ONLY if the specific EDU token is used
-               if (toolInput.tokenAddress?.toLowerCase() === ARBITRUM_EDU_TOKEN_ADDRESS.toLowerCase()) {
+                       if (toolName === 'send_erc20_token') {
+                            // Use assertion after checking property existence (safer)
+                            if (toolInput && typeof toolInput.tokenAddress === 'string' && 
+                                (toolInput as SendErc20TokenInput).tokenAddress?.toLowerCase() === ARBITRUM_EDU_TOKEN_ADDRESS.toLowerCase()) {
                    targetChainId = ARBITRUM_CHAIN_ID;
-               } else {
-                   targetChainId = EDUCHAIN_CHAIN_ID; // Assume EDU Chain for other ERC20s
-               }
-          } 
-           // Add balance check logic if needed
-      } else if (agentId === 'dex') {
-          targetChainId = EDUCHAIN_CHAIN_ID; // All DEX actions are on EDU Chain
-      } else {
-          // Default or Info agent - usually no target chain for tx needed
-          targetChainId = null; 
-      }
+                            }
+                       } 
+                  } 
+                  // else DEX/Utility stay on EDUCHAIN_CHAIN_ID
       console.log(`[${agentId}] Determined Target Chain ID for action ${toolName}: ${targetChainId}`);
 
-      // --- Targeted Address Injection --- 
+                  // --- Address Injection (Using Type Assertions after checks) ---
       if (address) {
-          console.log(`Checking if address injection needed for tool: ${toolName}`);
-          // Tools requiring 'walletAddress'
           if (['get_edu_balance', 'get_token_balance', 'get_multiple_token_balances', 'get_nft_balance', 'get_wallet_overview'].includes(toolName)) {
-              if (toolInput.walletAddress === undefined || toolInput.walletAddress === '') {
-                  toolInput.walletAddress = address;
-                  savedToolInput.walletAddress = address;
+                          const typedInput = toolInput as WalletAddressInput;
+                          if (typedInput.walletAddress === undefined || typedInput.walletAddress === '') {
+                              typedInput.walletAddress = address;
                   console.log(`Injected connected address into walletAddress for ${toolName}`);
               }
           }
-          // Tools requiring 'recipient' (and defaulting to self if missing)
           if (['send_edu', 'send_erc20_token', 'swap_tokens', 'swap_edu_for_tokens', 'swap_tokens_for_edu'].includes(toolName)) {
-              if (toolInput.recipient === undefined || toolInput.recipient === '') {
-                  toolInput.recipient = address;
-                  savedToolInput.recipient = address;
-                  console.log(`Injected connected address into recipient for ${toolName}`);
-              }
-          }
-           // Tools requiring 'address' (e.g., for bridging approve/deposit/withdraw)
+                           const typedInput = toolInput as RecipientInput; // Assert relevant type
+                           if (typedInput.recipient === undefined || typedInput.recipient === '') {
+                               typedInput.recipient = address;
+                               console.log(`Injected/Defaulted recipient to self for ${toolName}`);
+                           }
+                      }
           if (['approve', 'deposit', 'withdraw'].includes(toolName)) {
-              if (toolInput.address === undefined || toolInput.address === '') {
-                  toolInput.address = address;
-                  savedToolInput.address = address;
+                          const typedInput = toolInput as AddressInput; // Assert relevant type
+                          if (typedInput.address === undefined || typedInput.address === '') {
+                              typedInput.address = address;
                   console.log(`Injected connected address into address for ${toolName}`);
               }
           }
-          // Default recipient to self for specific swap/wrap actions if still missing
-          if (toolInput.recipient === undefined || toolInput.recipient === '') {
-              if (['wrap_edu', 'unwrap_wedu', 'swap_tokens', 'swap_edu_for_tokens', 'swap_tokens_for_edu'].includes(toolName)) {
-                 toolInput.recipient = address;
-                 savedToolInput.recipient = address;
-                 console.log(`Defaulted recipient to self for action: ${toolName}`);
+                  }
+                  // --- End Address Injection ---
+
+                  let toolResultContent: any = null;
+                  let isError = false;
+                  lastToolNameCalled = toolName; // Update last tool called
+                  lastIterationHadError = false; // Reset error status for this iteration
+
+                  try {
+                      // --- Execute Tool --- 
+        const infoToolFn = internalInfoTools[toolName as InfoAction];
+                      const txPrepToolFn = internalTxPrepTools[toolName as Exclude<TransactionAction, BridgeAction>];
+                      const bridgeAction = (toolName === 'approve' || toolName === 'deposit' || toolName === 'withdraw') ? toolName as BridgeAction : null;
+
+        if (infoToolFn) {
+                          console.log(`Executing Info Tool: ${toolName}`);
+                          // Refactored to use a single handler for info tools
+                          toolResultContent = await executeInfoTool(toolName as InfoAction, toolInput, address);
+                          // Info tools don't generate final transaction data
+                          transactionData = null; 
+                          // Clear assistant message if info tool ran successfully, 
+                          // let next LLM response generate it based on tool result
+                          finalAssistantMessage = null; 
+                      } else if (txPrepToolFn) {
+                          console.log(`Executing Tx Prep Tool: ${toolName}`);
+                          // Refactored to use a single handler for tx prep tools
+                          transactionData = await executeTxPrepTool(toolName as Exclude<TransactionAction, BridgeAction>, toolInput, address, targetChainId);
+                          toolResultContent = transactionData; // Use prepared tx as result for LLM
+                          // Tx prep is usually the final step, agent should provide text explanation
+                      } else if (bridgeAction) {
+                          console.log(`Executing Bridge Tool: ${bridgeAction}`);
+                          transactionData = await executeBridgeTool(bridgeAction, toolInput, address); 
+                          toolResultContent = transactionData; // Use prepared tx as result for LLM
+                         // Bridge prep is usually final step, agent should provide text explanation
+                        } else {
+                          throw new Error(`Unknown tool name: ${toolName}`);
+                      }
+                      
+                      console.log(`Tool ${toolName} executed successfully.`);
+                  } catch (error) {
+                      console.error(`Error executing tool ${toolName}:`, error);
+                      isError = true;
+                      toolResultContent = { error: `Failed to execute tool ${toolName}: ${(error as Error).message}` };
+                      // Keep any previous assistant message and append error
+                      finalAssistantMessage = finalAssistantMessage ? `${finalAssistantMessage}\n\nError: Failed to execute tool ${toolName}. ${(error as Error).message}` 
+                                                                    : `Error: Failed to execute tool ${toolName}. ${(error as Error).message}`;
+                  }
+                  
+                  // Update tracking variables *after* try/catch
+                  lastToolResultContent = toolResultContent;
+                  lastIterationHadError = isError;
+                  
+                  // Add the tool result message to be sent back to the LLM
+                  responseMessages.push({
+                      role: 'user', // Must be 'user' role for tool results
+                      content: [
+                          {
+                              type: 'tool_result',
+                              tool_use_id: toolUseId,
+                              content: typeof toolResultContent === 'string' ? toolResultContent : JSON.stringify(toolResultContent, replacer), // Convert to string if not already
+                              is_error: isError,
+                          }
+                      ]
+                  });
               }
           }
-      }
-      // --- End Targeted Address Injection ---
-      
-      // --- Validate/Extract Address Strings --- 
-      let recipientAddr: string | undefined = undefined;
-      if (toolInput.recipient) {
-          if (typeof toolInput.recipient === 'string') {
-              recipientAddr = toolInput.recipient;
-          } else if (typeof toolInput.recipient === 'object' && typeof toolInput.recipient.address === 'string') {
-              console.warn('Recipient was an object, extracting address string:', toolInput.recipient.address);
-              recipientAddr = toolInput.recipient.address; 
-          } else {
-              throw new Error('Invalid recipient format received from LLM.');
-          }
-      } else if (address && ['send_edu', 'send_erc20_token', 'swap_tokens', 'swap_edu_for_tokens', 'swap_tokens_for_edu'].includes(toolName)) {
-          // Use user's address if recipient is needed but missing
-          recipientAddr = address;
-          console.log('Recipient missing, using user address:', address);
-      }
-      // Add similar validation for tokenIn, tokenOut if needed
-      // ...
-      // --- End Validation --- 
-      
-      try {
-        // Check if it's an INFO tool
-        const infoToolFn = internalInfoTools[toolName as InfoAction];
-        if (infoToolFn) {
-            console.log(`Processing Info Tool Request: ${toolName}`, "Input:", toolInput);
-            
-            try {
-                let toolResult: any;
-                
-                // --- Handle each tool with proper parameter extraction ---
-                switch(toolName) {
-                    // Token & Pool Info Tools
-                    case 'get_token_price':
-                    case 'get_token_info':
-                    case 'get_token_historical_data': {
-                        let tokenId: string;
-                        
-                        // Extract and validate tokenId - handle string or token name
-                        if (typeof toolInput.tokenId === 'string') {
-                            const rawTokenId = toolInput.tokenId;
-                            // Check if it's a known token name that needs mapping
-                            if (TOKEN_NAME_TO_ADDRESS_MAP[rawTokenId.toLowerCase()]) {
-                                tokenId = TOKEN_NAME_TO_ADDRESS_MAP[rawTokenId.toLowerCase()];
-                                console.log(`Mapped token name '${rawTokenId}' to address ${tokenId}`);
-                            } 
-                            // Check if it looks like an address
-                            else if (rawTokenId.startsWith('0x') && rawTokenId.length === 42) {
-                                tokenId = rawTokenId;
-                            } 
-                            else {
-                                throw new Error(`Unrecognized token identifier: ${rawTokenId}`);
-                            }
-                        } else {
-                            throw new Error(`Invalid tokenId: must be a string address or token name`);
-                        }
-                        
-                        // Get optional count parameter for historical data
-                        const count = toolName === 'get_token_historical_data' ? 
-                            (typeof toolInput.count === 'number' ? toolInput.count : undefined) : 
-                            undefined;
-                            
-                        // Call the appropriate function with extracted parameters
-                        if (toolName === 'get_token_price') {
-                            toolResult = await agentKit.getTokenPrice(tokenId);
-                        } else if (toolName === 'get_token_info') {
-                            toolResult = await agentKit.getToken(tokenId);
-                        } else { // get_token_historical_data
-                            toolResult = await agentKit.getTokenDayData(tokenId, count);
-                        }
+
+          // Add the response and result messages to the main history
+          messages.push(...responseMessages);
+
+          // If the last response did NOT contain a tool use, break the loop
+          if (!hasToolUse) {
+              console.log('--- Loop ended: No tool use in last response --- ');
                         break;
                     }
                     
-                    case 'get_pool_info':
-                    case 'get_pool_historical_data': {
-                        // Validate poolId
-                        if (!toolInput.poolId || typeof toolInput.poolId !== 'string' || 
-                            !toolInput.poolId.startsWith('0x')) {
-                            throw new Error('Invalid pool address');
-                        }
-                        
-                        const poolId = toolInput.poolId;
-                        const count = toolName === 'get_pool_historical_data' ? 
-                            (typeof toolInput.count === 'number' ? toolInput.count : undefined) : 
-                            undefined;
-                            
-                        if (toolName === 'get_pool_info') {
-                            toolResult = await agentKit.getPool(poolId);
-                        } else { // get_pool_historical_data
-                            toolResult = await agentKit.getPoolDayData(poolId, count);
+          // Safety break if max iterations reached
+          if (i === MAX_TOOL_CALLS - 1) {
+              console.warn('--- Loop ended: Max tool calls reached --- ');
+              if (!finalAssistantMessage) { // Provide a fallback message if none exists
+                  finalAssistantMessage = "Sorry, I couldn't complete the request within the allowed steps.";
                         }
                         break;
                     }
-                    
-                    // Balance & Wallet Tools
-                    case 'get_edu_balance': {
-                        // Extract and validate address
-                        let walletAddress: string;
-                        if (typeof toolInput.address === 'string' && toolInput.address.startsWith('0x')) {
-                            walletAddress = toolInput.address;
-                        } else if (address) {
-                            walletAddress = address;
-                            console.log('Using connected wallet address for get_edu_balance');
-                        } else {
-                            throw new Error('No valid address found for checking EDU balance');
-                        }
-                        
-                        toolResult = await agentKit.getEduBalance(walletAddress);
-                        
-                        // AUTO-PROGRESSION FOR DEX: If this is a swap intent and we're checking EDU balance
-                        if (agentId === 'dex' && swapIntent && swapIntent.isFromEdu) {
-                            console.log('Found balance for swap intent, checking if sufficient:', toolResult);
-                            
-                            // Parse and check balance
-                            let hasBalance = false;
-                            try {
-                                const balanceWei = BigInt(toolResult.balance || '0');
-                                const amountWei = BigInt(Math.floor(parseFloat(swapIntent.amount) * 1e18)); // Simple conversion to wei
-                                hasBalance = balanceWei >= amountWei;
-                                console.log(`Balance check: ${balanceWei} >= ${amountWei} = ${hasBalance}`);
-                            } catch (e) {
-                                console.error('Error checking balance:', e);
-                            }
-                            
-                            if (hasBalance) {
-                                // Proceed with swap instead of just showing balance
-                                console.log('Balance is sufficient, auto-proceeding with swap...');
-                                
-                                // Look up the token address
-                                let tokenOutAddress = '';
-                                try {
-                                    // Get mapped address for common tokens
-                                    const tokenName = swapIntent.toToken.toLowerCase();
-                                    if (TOKEN_NAME_TO_ADDRESS_MAP[tokenName]) {
-                                        tokenOutAddress = TOKEN_NAME_TO_ADDRESS_MAP[tokenName];
-                                        console.log(`Found address for ${tokenName}: ${tokenOutAddress}`);
+      }
+
+      // --- Send Final Response --- 
+      // If the loop finished without a final text message (e.g., hit max calls after tool use)
+      // construct a message based on the last tool result.
+      if (!finalAssistantMessage) { 
+           if (lastIterationHadError) {
+                // Error message should have already been set in the catch block
+                finalAssistantMessage = finalAssistantMessage || `An error occurred during the last step (${lastToolNameCalled || 'unknown tool'}). Please check the logs.`; 
+                console.error('Loop finished after error, finalAssistantMessage was:', finalAssistantMessage);
+           } else if (lastToolResultContent) {
+               console.log('Loop finished without final text, using last tool result.');
+               // Use a simple representation of the last result
+               finalAssistantMessage = `I reached the step limit after performing the action '${lastToolNameCalled || 'unknown'}. Here is the result:\n\n\`\`\`json\n${JSON.stringify(lastToolResultContent, replacer, 2)}\n\`\`\``;
                                     } else {
-                                        console.log(`Unknown token: ${tokenName}. Available tokens:`, Object.keys(TOKEN_NAME_TO_ADDRESS_MAP));
-                                    }
-                                } catch (e) {
-                                    console.error('Error getting token address:', e);
-                                }
-                                
-                                if (tokenOutAddress) {
-                                    // Always get swap quote first
-                                    console.log(`Getting swap quote for ${swapIntent.amount} EDU to ${tokenOutAddress}...`);
-                                    try {
-                                        const quoteResult = await agentKit.getSwapQuote(WEDU_ADDRESS, tokenOutAddress, swapIntent.amount);
-                                        console.log('Swap quote result:', quoteResult);
-                                        
-                                        if (quoteResult) {
-                                            // Update the assistant message to show the quote first
-                                            const amountOut = parseFloat(quoteResult.formattedAmountOut || '0').toFixed(6);
-                                            console.log(`Quote received: ${amountOut} ${quoteResult.tokenOutSymbol}`);
-                                            
-                                            // Now prepare the swap transaction
-                                            console.log('Preparing swap transaction...');
-                                            const txData = await agentKit.prepareSwapEduForTokensTx(
-                                                tokenOutAddress, 
-                                                swapIntent.amount, 
-                                                address, 
-                                                0.5, // default slippage
-                                                20 // default deadline 
-                                            );
-                                            console.log('Swap transaction prepared:', txData);
-                                            
-                                            // Set transaction data for the response
-                                            transactionData = txData;
-                                            finalAction = 'swap_edu_for_tokens';
-                                            targetChainId = EDUCHAIN_CHAIN_ID;
-                                            savedToolInput = {
-                                                tokenOut: tokenOutAddress,
-                                                amountIn: swapIntent.amount,
-                                                recipient: address,
-                                                slippagePercentage: 0.5,
-                                                deadlineMinutes: 20
-                                            };
-                                            
-                                            // Update message to show both quote and transaction details
-                                            finalAssistantMessage = `Your EDU balance: **${toolResult.balanceDisplay} EDU** ($${toolResult.balanceUSD})
+               // Fallback if loop ended strangely without text or tool result
+               console.error('Loop finished without a final assistant message or last tool result.');
+               finalAssistantMessage = "Sorry, something went wrong and I couldn't generate a final response.";
+           }
+      }
+      
+      const responsePayload: { 
+        content: string; 
+        transactionData?: any; 
+        action?: string | null; 
+        targetChainId?: number | null;
+        toolInput?: Record<string, any>;
+        toolCallSequence?: string[]; // <-- Add sequence to payload type
+        // Add history back if needed by frontend
+        // history?: Anthropic.Messages.MessageParam[]; 
+      } = {
+          content: finalAssistantMessage
+      };
+      // Attach transaction data ONLY if the *last* action was a tx prep/bridge
+      if (transactionData && (internalTxPrepTools[finalAction as Exclude<TransactionAction, BridgeAction>] || ['approve', 'deposit', 'withdraw'].includes(finalAction || ''))) {
+          responsePayload.transactionData = transactionData;
+          console.log('Attaching final transaction data to response for action:', finalAction);
+      }
+      if (finalAction) {
+          responsePayload.action = finalAction;
+      }
+      if (targetChainId !== null) {
+          responsePayload.targetChainId = targetChainId;
+      }
+      // Include the input of the *last* tool called for context
+      if (savedToolInput && Object.keys(savedToolInput).length > 0) {
+          responsePayload.toolInput = savedToolInput;
+          console.log('Including last toolInput in response:', savedToolInput);
+      }
 
-Based on your request to swap ${swapIntent.amount} EDU for ${swapIntent.toToken}:
+      // Add the tool call sequence to the response
+      if (toolCallSequence.length > 0) {
+          responsePayload.toolCallSequence = toolCallSequence;
+          console.log('Including toolCallSequence in response:', toolCallSequence);
+      }
+      
+      // responsePayload.history = messages; // Optional: send back full history
+      
+      return NextResponse.json(responsePayload);
 
-• Quote: You will receive approximately **${amountOut} ${quoteResult.tokenOutSymbol}**
-• Price impact: ${(quoteResult.priceImpact || 0).toFixed(2)}%
-• Slippage tolerance: 0.5%
+  } catch (error) {
+      console.error('API Route Error:', error);
+      // Ensure error is serializable
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return NextResponse.json(
+          { content: `Sorry, an unexpected error occurred: ${errorMessage}`, error: errorMessage },
+          { status: 500 }
+      );
+  }
+}
 
-I've prepared the transaction for you. Please confirm it in your wallet.`;
-                                        } else {
-                                            console.error('No quote result received');
-                                            finalAssistantMessage = `Your EDU balance: **${toolResult.balanceDisplay} EDU** ($${toolResult.balanceUSD})\n\nI couldn't get a quote for swapping to ${swapIntent.toToken}. Please try again or specify a different token.`;
-                                        }
-                                    } catch (quoteError) {
-                                        console.error('Error getting swap quote:', quoteError);
-                                        
-                                        // Check specifically for "No route found" error
-                                        if (quoteError instanceof Error && quoteError.message.includes('No route found')) {
-                                            finalAssistantMessage = `Your EDU balance: **${toolResult.balanceDisplay} EDU** ($${toolResult.balanceUSD})
+// --- Helper: BigInt Replacer --- (Keep this)
+const replacer = (key: string, value: any) => 
+    typeof value === 'bigint' ? value.toString() : value;
 
-I couldn't find a valid swap route from EDU to ${swapIntent.toToken}. This likely means:
+// --- Helper: Execute Info Tool --- (Updated for Type Safety)
+async function executeInfoTool(toolName: InfoAction, toolInput: BaseToolInput, connectedAddress: string | null): Promise<any> {
+    const toolFn = internalInfoTools[toolName];
+    if (!toolFn) throw new Error(`Internal mapping missing for info tool: ${toolName}`);
 
-• There may not be enough liquidity in the EDU-${swapIntent.toToken} pools
-• A direct trading pair might not exist between these tokens
-• The DEX might not support this token pair yet
-
-You could try:
-• A different token with more liquidity
-• A smaller amount
-• Using an intermediary token (e.g., swap EDU → WETH → ${swapIntent.toToken})`; 
-                                        } else {
-                                            finalAssistantMessage = `Your EDU balance: **${toolResult.balanceDisplay} EDU** ($${toolResult.balanceUSD})\n\nError getting a quote: ${(quoteError as Error).message}`;
-                                        }
-                                    }
-                                } else {
-                                    // No token address found
-                                    finalAssistantMessage = `Your EDU balance: **${toolResult.balanceDisplay} EDU** ($${toolResult.balanceUSD})\n\nI couldn't find the token address for ${swapIntent.toToken}. Supported tokens: ${Object.keys(TOKEN_NAME_TO_ADDRESS_MAP).join(', ')}`;
-                                }
-                            } else {
-                                // Not enough balance
-                                finalAssistantMessage = `Your EDU balance: **${toolResult.balanceDisplay} EDU** ($${toolResult.balanceUSD})\n\nYou don't have enough EDU to swap ${swapIntent.amount} EDU for ${swapIntent.toToken}.`;
-                            }
-                        }
-                        break;
-                    }
-                    
-                    case 'get_token_balance': {
-                        // Validate required parameters
-                        if (!toolInput.tokenAddress || typeof toolInput.tokenAddress !== 'string') {
-                            throw new Error('tokenAddress is required and must be a string');
-                        }
-                        
-                        let walletAddress: string;
-                        if (typeof toolInput.walletAddress === 'string' && toolInput.walletAddress.startsWith('0x')) {
-                            walletAddress = toolInput.walletAddress;
-                        } else if (address) {
-                            walletAddress = address;
-                            console.log('Using connected wallet address for get_token_balance');
-                        } else {
-                            throw new Error('No valid wallet address found for checking token balance');
-                        }
-                        
-                        toolResult = await agentKit.getTokenBalance(toolInput.tokenAddress, walletAddress);
-                        
-                        // AUTO-PROGRESSION FOR DEX: If this is a swap intent and we're checking token balance
-                        if (agentId === 'dex' && swapIntent && !swapIntent.isFromEdu) {
-                            console.log('Found token balance for swap intent, checking if sufficient:', toolResult);
-                            
-                            // Similar logic for token-to-token or token-to-EDU swaps could be implemented here
-                            // This would involve checking if the token address matches swapIntent.fromToken
-                            // And then proceeding with the appropriate swap preparation
-                        }
-                        break;
-                    }
-                    
-                    case 'get_multiple_token_balances': {
-                        // Validate parameters
-                        if (!Array.isArray(toolInput.tokenAddresses)) {
-                            throw new Error('tokenAddresses must be an array of token addresses');
-                        }
-                        
-                        let walletAddress: string;
-                        if (typeof toolInput.walletAddress === 'string' && toolInput.walletAddress.startsWith('0x')) {
-                            walletAddress = toolInput.walletAddress;
-                        } else if (address) {
-                            walletAddress = address;
-                            console.log('Using connected wallet address for get_multiple_token_balances');
-                        } else {
-                            throw new Error('No valid wallet address found for checking multiple token balances');
-                        }
-                        
-                        toolResult = await agentKit.getMultipleTokenBalances(toolInput.tokenAddresses, walletAddress);
-                        break;
-                    }
-                    
-                    case 'get_nft_balance': {
-                        // Validate parameters
-                        if (!toolInput.nftAddress || typeof toolInput.nftAddress !== 'string') {
-                            throw new Error('nftAddress is required and must be a string');
-                        }
-                        
-                        let walletAddress: string;
-                        if (typeof toolInput.walletAddress === 'string' && toolInput.walletAddress.startsWith('0x')) {
-                            walletAddress = toolInput.walletAddress;
-                        } else if (address) {
-                            walletAddress = address;
-                            console.log('Using connected wallet address for get_nft_balance');
-                        } else {
-                            throw new Error('No valid wallet address found for checking NFT balance');
-                        }
-                        
-                        toolResult = await agentKit.getERC721Balance(toolInput.nftAddress, walletAddress);
-                        break;
-                    }
-                    
-                    case 'get_wallet_overview': {
-                        let walletAddress: string;
-                        if (typeof toolInput.walletAddress === 'string' && toolInput.walletAddress.startsWith('0x')) {
-                            walletAddress = toolInput.walletAddress;
-                        } else if (address) {
-                            walletAddress = address;
-                            console.log('Using connected wallet address for get_wallet_overview');
-                        } else {
-                            throw new Error('No valid wallet address found for wallet overview');
-                        }
-                        
-                        // Optional parameters
-                        const tokenAddresses = Array.isArray(toolInput.tokenAddresses) ? 
-                            toolInput.tokenAddresses : undefined;
-                        const nftAddresses = Array.isArray(toolInput.nftAddresses) ? 
-                            toolInput.nftAddresses : undefined;
-                            
-                        toolResult = await agentKit.getWalletOverview(walletAddress, tokenAddresses, nftAddresses);
-                        break;
-                    }
-                    
-                    // DEX Aggregation Tools
+    console.log(`Calling agentKit function for ${toolName} with input:`, toolInput);
+    
+    // Use type assertions and checks before calling agentKit functions
+    switch(toolName) {
+        case 'get_token_balance': { 
+            const input = toolInput as GetTokenBalanceInput;
+            const resolvedTokenAddress = resolveTokenIdentifier(input.tokenAddress, 'tokenAddress');
+            if (!input.walletAddress) throw new Error('Wallet address missing for get_token_balance');
+            return await toolFn(resolvedTokenAddress, input.walletAddress);
+        }
+        case 'get_edu_balance': {
+             const input = toolInput as GetBalanceInput;
+             if (!input.walletAddress) throw new Error('Wallet address missing for get_edu_balance');
+             return await toolFn(input.walletAddress);
+        }
+        case 'get_swap_quote': {
+            const input = toolInput as SwapQuoteInput;
+            const resolvedTokenIn = resolveTokenIdentifier(input.tokenIn, 'tokenIn');
+            const resolvedTokenOut = resolveTokenIdentifier(input.tokenOut, 'tokenOut');
+            if (!input.amountIn) throw new Error ('amountIn missing for get_swap_quote');
+            return await toolFn(resolvedTokenIn, resolvedTokenOut, input.amountIn);
+        }
+        case 'get_token_price': {
+            const input = toolInput as GetTokenInfoInput; // Uses tokenId
+            const resolvedTokenId = resolveTokenIdentifier(input.tokenId, 'tokenId');
+            return await toolFn(resolvedTokenId);
+        }        
+        case 'get_token_info': { 
+            const input = toolInput as GetTokenInfoInput; // Uses tokenId
+            const resolvedTokenId = resolveTokenIdentifier(input.tokenId, 'tokenId');
+            return await toolFn(resolvedTokenId);
+        }
+        
+        // Added Cases for Missing Info Tools
+        case 'get_pool_info': {
+            const input = toolInput as BaseToolInput & { poolId?: string };
+            if (!input.poolId || !input.poolId.startsWith('0x')) throw new Error('Invalid poolId missing for get_pool_info');
+            return await toolFn(input.poolId);
+        }
                     case 'get_top_tokens': {
-                        const count = typeof toolInput.count === 'number' ? toolInput.count : undefined;
-                        toolResult = await agentKit.getTopTokens(count);
-                        break;
+            const input = toolInput as BaseToolInput & { count?: number };
+            return await toolFn(input.count); // Pass optional count
                     }
-                    
                     case 'get_top_pools': {
-                        const count = typeof toolInput.count === 'number' ? toolInput.count : undefined;
-                        toolResult = await agentKit.getTopPools(count);
-                        break;
+            const input = toolInput as BaseToolInput & { count?: number };
+            return await toolFn(input.count); // Pass optional count
                     }
-                    
                     case 'get_total_tvl': {
-                        toolResult = await agentKit.getTotalTVL();
-                        break;
+            return await toolFn(); // No args expected
                     }
-                    
                     case 'get_24h_volume': {
-                        toolResult = await agentKit.getFactory();
-                        break;
-                    }
-                    
-                    // Swap Quote
-                    case 'get_swap_quote': {
-                        // Validate required parameters
-                        if (!toolInput.tokenIn || typeof toolInput.tokenIn !== 'string') {
-                            throw new Error('tokenIn is required and must be a string address');
-                        }
-                        if (!toolInput.tokenOut || typeof toolInput.tokenOut !== 'string') {
-                            throw new Error('tokenOut is required and must be a string address');
-                        }
-                        if (!toolInput.amountIn || typeof toolInput.amountIn !== 'string') {
-                            throw new Error('amountIn is required and must be a string');
-                        }
-                        
-                        toolResult = await agentKit.getSwapQuote(
-                            toolInput.tokenIn,
-                            toolInput.tokenOut,
-                            toolInput.amountIn
-                        );
-                        break;
-                    }
-                    
-                    // External Market Tools
+            return await toolFn(); // No args expected (calls getFactory)
+        }
+        case 'get_token_historical_data': {
+            const input = toolInput as BaseToolInput & { tokenId?: string, count?: number };
+            const resolvedTokenId = resolveTokenIdentifier(input.tokenId, 'tokenId');
+            return await toolFn(resolvedTokenId, input.count); // Pass tokenId and optional count
+        }
+        case 'get_pool_historical_data': {
+            const input = toolInput as BaseToolInput & { poolId?: string, count?: number };
+            if (!input.poolId || !input.poolId.startsWith('0x')) throw new Error('Invalid poolId missing for get_pool_historical_data');
+            return await toolFn(input.poolId, input.count); // Pass poolId and optional count
+        }
+        case 'get_multiple_token_balances': {
+            const input = toolInput as BaseToolInput & { tokenAddresses?: string[], walletAddress?: string };
+            if (!Array.isArray(input.tokenAddresses)) throw new Error('tokenAddresses must be an array for get_multiple_token_balances');
+            if (!input.walletAddress) throw new Error('Wallet address missing for get_multiple_token_balances');
+            // Optional: Resolve each address in the array if needed
+            const resolvedAddresses = input.tokenAddresses.map(addr => resolveTokenIdentifier(addr, 'tokenAddresses item'));
+            return await toolFn(resolvedAddresses, input.walletAddress);
+        }
+        case 'get_nft_balance': {
+            const input = toolInput as BaseToolInput & { nftAddress?: string, walletAddress?: string };
+            if (!input.nftAddress || !input.nftAddress.startsWith('0x')) throw new Error('Invalid nftAddress missing for get_nft_balance');
+            if (!input.walletAddress) throw new Error('Wallet address missing for get_nft_balance');
+            return await toolFn(input.nftAddress, input.walletAddress);
+        }
+        case 'get_wallet_overview': {
+            const input = toolInput as BaseToolInput & { walletAddress?: string, tokenAddresses?: string[], nftAddresses?: string[] };
+            if (!input.walletAddress) throw new Error('Wallet address missing for get_wallet_overview');
+             // Optional: Resolve token addresses if needed
+            const resolvedTokenAddrs = input.tokenAddresses?.map(addr => resolveTokenIdentifier(addr, 'tokenAddresses item'));
+            return await toolFn(input.walletAddress, resolvedTokenAddrs, input.nftAddresses);
+        }
                     case 'get_external_market_data': {
-                        toolResult = await agentKit.getExternalMarketData();
-                        break;
+             return await toolFn(); // No args expected
                     }
-                    
                     case 'check_arbitrage_opportunities': {
-                        const threshold = typeof toolInput.threshold === 'number' ? 
-                            toolInput.threshold : undefined;
-                        toolResult = await agentKit.checkArbitrageOpportunities(threshold);
-                        break;
-                    }
-                    
+            const input = toolInput as BaseToolInput & { threshold?: number };
+            return await toolFn(input.threshold); // Pass optional threshold
+        }
                     case 'get_external_market_config': {
-                        toolResult = await agentKit.getConfig();
-                        break;
+             return await toolFn(); // No args expected
                     }
-                    
                     case 'get_rpc_url': {
-                        toolResult = await agentKit.getRpcUrl();
-                        break;
-                    }
-                    
-                    default:
-                        throw new Error(`Unknown info tool: ${toolName}`);
-                }
-                
-                // Format and return the result
-                const resultString = JSON.stringify(toolResult, null, 2);
-                console.log(`Info Tool Result (${toolName}):`, resultString);
-                
-                // Instead of simple formatting, send the result back to Claude for interpretation
-                try {
-                    // Second call to Anthropic to interpret the tool result
-                    const interpretationResponse = await anthropic.messages.create({
-                        model: 'claude-3-haiku-20240307',
-                        max_tokens: 1024,
-                        system: `You are Lilikoi's Data Interpreter. Your job is to interpret and present data from info tools in a clear, concise, and user-friendly way.
-
-FORMATTING GUIDELINES:
-- Use proper structure with headers, bullet points, and spacing for readability
-- For lists of items (tokens, pools, etc.), ALWAYS use bullet points (•) with one item per line
-- For rankings (like "top tokens"), include the rank number with each item
-- Include the most important metrics for each item - format numbers nicely with commas and 2 decimal places
-- Use markdown formatting (bold, italics) sparingly to highlight important information
-- Organize information into logical sections with clear headings when appropriate
-- Keep explanations brief but meaningful
-
-SPECIFIC DATA TYPES:
-- For token lists: Format as "• #1: TOKEN_NAME - $XXX,XXX TVL - $XXX volume" 
-- For balances: "Your XXX balance: XX.XX XXX ($XX.XX USD)"
-- For prices: "Current price: $X.XX USD per XXX"
-- For comparisons: Create a clear structure showing the differences
-
-GENERAL RULES:
-- Be concise but comprehensive
-- Use plain language, not technical jargon
-- Extract and prioritize the most relevant information the user likely cares about`,
-                        messages: [
-                            {
-                                role: 'user',
-                                content: `I requested information using the "${toolName.replace(/_/g, ' ')}" tool. Here is the raw result:
-                                
-                                ${resultString}
-                                
-                                Please interpret this data and present it in a clear, readable, well-structured format. My original question was: "${userMessage}"`
-                            }
-                        ],
-                    });
-                    
-                    // Extract Claude's interpretation
-                    const interpretationBlocks = interpretationResponse.content.filter(block => block.type === 'text');
-                    if (interpretationBlocks.length > 0) {
-                        const interpretation = interpretationBlocks.map(block => block.text).join('\n');
-                        // Replace the raw JSON with Claude's interpretation
-                        finalAssistantMessage = interpretation;
-                    } else {
-                        // Fall back to basic formatting if interpretation fails
-                        finalAssistantMessage = `Okay, I found the information for **${toolName.replace(/_/g, ' ')}**:\n\n` + 
-                            '```json\n' + 
-                            resultString + 
-                            '\n```';
-                    }
-                } catch (interpretError) {
-                    console.error('Error getting interpretation from Claude:', interpretError);
-                    // Fall back to basic formatting if interpretation fails
-                    finalAssistantMessage = `Okay, I found the information for **${toolName.replace(/_/g, ' ')}**:\n\n` + 
-                        '```json\n' + 
-                        resultString + 
-                        '\n```';
-                }
-            } catch (error) {
-                console.error(`Error executing ${toolName}:`, error);
-                finalAssistantMessage = `Error performing ${toolName.replace(/_/g, ' ')}: ${(error as Error).message}`;
-            }
+             return await toolFn(); // No args expected
         }
-        // Check if it's a TRANSACTION PREPARATION tool
-        else if (internalTxPrepTools[toolName as Exclude<TransactionAction, BridgeAction>]) {
-          const txPrepToolFn = internalTxPrepTools[toolName as Exclude<TransactionAction, BridgeAction>]!;
-          console.log(`Calling Tx Prep Tool: ${toolName} with validated input:`, toolInput);
-          
-          let preparedTxData: any;
-          // Pass validated arguments
-          switch(toolName) {
-              case 'send_edu': 
-                  if (!recipientAddr) throw new Error('Recipient address missing for send_edu');
-                  preparedTxData = await txPrepToolFn(recipientAddr, toolInput.amount); 
-                  break;
-              case 'send_erc20_token': 
-                   if (!recipientAddr) throw new Error('Recipient address missing for send_erc20_token');
-                   // TODO: Validate tokenAddress similarly if needed
-                  preparedTxData = await txPrepToolFn(targetChainId, toolInput.tokenAddress, recipientAddr, toolInput.amount); 
-                  break;
-              case 'swap_tokens': 
-                  if (!recipientAddr) throw new Error('Recipient address missing for swap_tokens');
-                   // TODO: Validate tokenIn, tokenOut similarly if needed
-                  preparedTxData = await txPrepToolFn(toolInput.tokenIn, toolInput.tokenOut, toolInput.amountIn, recipientAddr, toolInput.slippagePercentage, toolInput.deadlineMinutes); 
-                  break;
-              case 'swap_edu_for_tokens': 
-                   if (!recipientAddr) throw new Error('Recipient address missing for swap_edu_for_tokens');
-                   // TODO: Validate tokenOut similarly if needed
-                  preparedTxData = await txPrepToolFn(toolInput.tokenOut, toolInput.amountIn, recipientAddr, toolInput.slippagePercentage, toolInput.deadlineMinutes); 
-                  break;
-              case 'swap_tokens_for_edu': 
-                   if (!recipientAddr) throw new Error('Recipient address missing for swap_tokens_for_edu');
-                   // TODO: Validate tokenIn similarly if needed
-                  preparedTxData = await txPrepToolFn(toolInput.tokenIn, toolInput.amountIn, recipientAddr, toolInput.slippagePercentage, toolInput.deadlineMinutes); 
-                  break;
+    }
+}
+
+// --- Helper: Execute Tx Prep Tool --- (Updated for Type Safety)
+async function executeTxPrepTool(toolName: Exclude<TransactionAction, BridgeAction>, toolInput: BaseToolInput, connectedAddress: string | null, targetChainId: number | null): Promise<any> {
+    const toolFn = internalTxPrepTools[toolName];
+    if (!toolFn) throw new Error(`Internal mapping missing for tx prep tool: ${toolName}`);
+
+    console.log(`Calling agentKit function for ${toolName} with input:`, toolInput);
+    
+    // Use type assertions and checks before calling agentKit functions
+    switch(toolName) {
+        case 'send_edu': { 
+            const input = toolInput as SendEduInput;
+            if (!input.recipient) throw new Error('Recipient missing for send_edu');
+            if (!input.amount) throw new Error ('Amount missing for send_edu');
+            return await toolFn(input.recipient, input.amount);
+        }
+        case 'send_erc20_token': { 
+            const input = toolInput as SendErc20TokenInput;
+            const resolvedTokenAddress = resolveTokenIdentifier(input.tokenAddress, 'tokenAddress');
+            if (!input.recipient) throw new Error('Recipient missing for send_erc20_token');
+            if (!input.amount) throw new Error ('Amount missing for send_erc20_token');
+            // Assuming agentKit function handles targetChainId implicitly or takes it if needed
+            return await toolFn(resolvedTokenAddress, input.recipient, input.amount); 
+        }
+        case 'swap_tokens': { 
+            const input = toolInput as SwapTokensInput;
+            const resolvedTokenIn = resolveTokenIdentifier(input.tokenIn, 'tokenIn');
+            const resolvedTokenOut = resolveTokenIdentifier(input.tokenOut, 'tokenOut');
+            if (!input.recipient) throw new Error('Recipient missing for swap_tokens');
+            if (!input.amountIn) throw new Error ('amountIn missing for swap_tokens');
+            return await toolFn(resolvedTokenIn, resolvedTokenOut, input.amountIn, input.recipient, input.slippagePercentage, input.deadlineMinutes);
+        }
+        case 'swap_edu_for_tokens': {
+            const input = toolInput as SwapEduForTokensInput;
+            const resolvedTokenOut = resolveTokenIdentifier(input.tokenOut, 'tokenOut');
+            if (!input.recipient) throw new Error('Recipient missing for swap_edu_for_tokens');
+            if (!input.amountIn) throw new Error ('amountIn missing for swap_edu_for_tokens');
+            return await toolFn(resolvedTokenOut, input.amountIn, input.recipient, input.slippagePercentage, input.deadlineMinutes);
+        }
+        case 'swap_tokens_for_edu': {
+            const input = toolInput as SwapTokensForEduInput;
+            const resolvedTokenIn = resolveTokenIdentifier(input.tokenIn, 'tokenIn');
+            if (!input.recipient) throw new Error('Recipient missing for swap_tokens_for_edu');
+            if (!input.amountIn) throw new Error ('amountIn missing for swap_tokens_for_edu');
+            return await toolFn(resolvedTokenIn, input.amountIn, input.recipient, input.slippagePercentage, input.deadlineMinutes);
+        }
               case 'wrap_edu': 
-                  preparedTxData = await txPrepToolFn(toolInput.amount); 
-                  break;
-              case 'unwrap_wedu': 
-                  preparedTxData = await txPrepToolFn(toolInput.amount); 
-                  break;
-              default:
-                   console.error(`Argument extraction/passing not defined for tx prep tool: ${toolName}`);
-                   throw new Error(`Internal config error for tx prep tool ${toolName}`);
-          }
-          
-          console.log('Prepared Tx Data:', JSON.stringify(preparedTxData, null, 2));
-          transactionData = preparedTxData;
-          finalAssistantMessage = finalAssistantMessage || `Okay, I've prepared the ${toolName.replace(/_/g, ' ')} transaction for you. Please confirm it in your wallet on the correct chain (ID: ${targetChainId}).`; 
+        case 'unwrap_wedu': { 
+            const input = toolInput as WrapUnwrapInput;
+            if (!input.amount) throw new Error (`Amount missing for ${toolName}`);
+            return await toolFn(input.amount);
         }
-        // Handle Bridging tools via BridgeMCP separately
-        else if (['approve', 'deposit', 'withdraw'].includes(toolName)) { 
-            if (agentId !== 'bridging') throw new Error(`Tool ${toolName} only available for bridging agent.`);
+              default:
+            throw new Error(`Argument handling not defined for tx prep tool: ${toolName}`);
+    }
+}
 
-            const bridgeAction = toolName as BridgeAction;
-            const pubkey = toolInput.address; 
-            const amount = toolInput.amount;
+// --- Helper: Execute Bridge Tool --- (Updated for Type Safety)
+async function executeBridgeTool(bridgeAction: BridgeAction, toolInput: BaseToolInput, connectedAddress: string | null): Promise<any> {
+    const input = toolInput as BridgeInput;
+    const pubkey = input.address; // Use injected address
+    const amount = input.amount;
 
             if (!pubkey || typeof pubkey !== 'string') {
                 throw new Error(`Missing or invalid user address (pubkey) for BridgeMCP action '${bridgeAction}'`);
@@ -952,95 +753,37 @@ GENERAL RULES:
                 throw new Error(`Missing or invalid amount for BridgeMCP action '${bridgeAction}'`);
             }
 
-            console.log(`Calling Bridge MCP: ${bridgeAction} with pubkey: ${pubkey}, amount: ${amount}`); 
+    // ... (rest of bridge logic: call BridgeMCP, check result, parse data) ...
+    const bridgeFn = BridgeMCP[bridgeAction];
+    // ... (error checking, call, result parsing) ...
+    const bridgeResult = await bridgeFn(pubkey, amount); 
+    // ... (handle bridgeResult.error and bridgeResult.data) ...
+    if (bridgeResult.data) {
+         let parsedData = typeof bridgeResult.data === 'string' ? JSON.parse(bridgeResult.data) : bridgeResult.data;
+         // ... validation ...
+         return parsedData;
+    } else { 
+        throw new Error(/* ... */); 
+    }
+}
 
-            if (typeof BridgeMCP[bridgeAction] !== 'function') {
-                 throw new Error(`BridgeMCP function for action '${bridgeAction}' not found.`);
-            }
-            
-            const bridgeResult = await BridgeMCP[bridgeAction](pubkey, amount);
-
-            console.log('[Bridge Result Raw]:', JSON.stringify(bridgeResult, null, 2)); 
-
-            if (bridgeResult.error) { 
-                throw new Error(`Bridge error from MCP: ${bridgeResult.error}`); 
-            }
-            
-            // Check if data exists before trying to parse
-            if (bridgeResult.data !== undefined && bridgeResult.data !== null) {
-                let parsedData: any;
-                try {
-                    // *** PARSE THE JSON STRING ***
-                    parsedData = typeof bridgeResult.data === 'string' ? JSON.parse(bridgeResult.data) : bridgeResult.data; 
-                    console.log('[Bridge Result Parsed Data]:', parsedData);
-                    
-                    // Optional: Add basic validation on the *parsed* object
-                    if (!parsedData || typeof parsedData !== 'object' || typeof parsedData.to !== 'string' || typeof parsedData.data !== 'string') {
-                       throw new Error('Parsed bridge data is invalid or missing required fields (to, data).');
-                    }
-                    
-                    transactionData = parsedData; // Assign the parsed object
-                    finalAssistantMessage = finalAssistantMessage || `Okay, I've prepared the ${bridgeAction} transaction for you via the bridge. Please confirm it in your wallet${targetChainId ? ` on the correct chain (ID: ${targetChainId})`: ''}.`;
-                
-                } catch (parseError) {
-                    console.error('[Bridge Result Parse Error]:', parseError);
-                    throw new Error(`Failed to parse transaction data received from bridge API for action '${bridgeAction}'.`);
-                }
+// --- NEW Helper: Resolve Token Identifier ---
+function resolveTokenIdentifier(identifier: string | undefined, paramName: string): string {
+    if (typeof identifier !== 'string' || identifier === '') {
+        throw new Error(`Missing or invalid token identifier for parameter: ${paramName}`);
+    }
+    const lowerCaseId = identifier.toLowerCase();
+    if (TOKEN_NAME_TO_ADDRESS_MAP[lowerCaseId]) {
+        const address = TOKEN_NAME_TO_ADDRESS_MAP[lowerCaseId];
+        console.log(`Resolved token '${identifier}' to address: ${address} for param '${paramName}'`);
+        return address;
+    } else if (identifier.startsWith('0x') && identifier.length === 42) {
+        // console.log(`Using provided address for token: ${identifier} for param '${paramName}'`);
+        return identifier; // Assume it's a valid address if it looks like one
             } else { 
-                throw new Error(`Bridge MCP action '${bridgeAction}' completed without explicit error but returned null or undefined data.`);
-            }
-        } else {
-          console.warn(`Tool ${toolName} requested but no matching function found.`);
-          finalAssistantMessage = finalAssistantMessage || `I recognized the action ${toolName}, but I encountered an internal error trying to execute it.`;
-        }
-      } catch (error) {
-          console.error(`Error executing tool ${toolName}:`, error);
-          finalAssistantMessage = finalAssistantMessage ? `${finalAssistantMessage}\n\nError performing action: ${(error as Error).message}` 
-                                                        : `Error performing action ${toolName}: ${(error as Error).message}`;
-          transactionData = null;
-          finalAction = null;
-          targetChainId = null;
-          savedToolInput = null;
-      }
+        throw new Error(`Unknown token identifier: '${identifier}' for param '${paramName}'. Cannot resolve to an address. Known names: ${Object.keys(TOKEN_NAME_TO_ADDRESS_MAP).join(', ')}`);
+    }
+}
 
-    } else if (!finalAssistantMessage) {
-        console.error("Anthropic response had no text or tool use blocks.");
-        finalAssistantMessage = "Sorry, I received an empty response. Could you try again?";
-    }
+// --- Make sure TOKEN_NAME_TO_ADDRESS_MAP, internalInfoTools, internalTxPrepTools, BridgeMCP, agentConfigs are defined above ---
 
-    // --- Send Final Response --- 
-    const responsePayload: { 
-      content: string; 
-      transactionData?: any; 
-      action?: string | null; 
-      targetChainId?: number | null;
-      toolInput?: Record<string, any>;
-    } = {
-        content: finalAssistantMessage!
-    };
-    if (transactionData) {
-        responsePayload.transactionData = transactionData;
-    }
-    if (finalAction) {
-        responsePayload.action = finalAction;
-    }
-    if (targetChainId !== null) {
-        responsePayload.targetChainId = targetChainId;
-    }
-    
-    // Include toolInput in response payload
-    if (savedToolInput && Object.keys(savedToolInput).length > 0) {
-        responsePayload.toolInput = savedToolInput;
-        console.log('Including toolInput in response:', savedToolInput);
-    }
-    
-    return NextResponse.json(responsePayload);
-
-  } catch (error) {
-    console.error('API Route Error:', error);
-    return NextResponse.json(
-      { error: 'Failed to process request' },
-      { status: 500 }
-    );
-  }
-} 

@@ -8,7 +8,7 @@ import { useBridgeTransaction, TransactionStatus, BridgeTransactionData } from '
 const EDUCHAIN_CHAIN_ID = 41923;
 const ARBITRUM_CHAIN_ID = 42161;
 const EXPLORER_URLS: { [key: number]: { name: string; url: string } } = {
-    [EDUCHAIN_CHAIN_ID]: { name: "EDU Chain Explorer", url: "https://eduscan.live/tx/" },
+    [EDUCHAIN_CHAIN_ID]: { name: "EDU Chain Explorer", url: "https://educhain.blockscout.com/tx/" },
     [ARBITRUM_CHAIN_ID]: { name: "Arbiscan", url: "https://arbiscan.io/tx/" },
 };
 
@@ -16,6 +16,7 @@ interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string | React.ReactNode;
   timestamp: string;
+  toolCallSequence?: string[];
 }
 
 interface ChatInterfaceProps {
@@ -178,10 +179,13 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
       }
 
       if (data.content) {
-          setMessages((prev) => [
-              ...prev,
-              { role: 'assistant', content: data.content, timestamp: getCurrentTime() },
-          ]);
+          const assistantMessage: Message = {
+              role: 'assistant',
+              content: data.content,
+              timestamp: getCurrentTime(),
+              toolCallSequence: data.toolCallSequence
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
       }
 
       if (data.transactionData && data.action && data.targetChainId) {
@@ -457,6 +461,11 @@ export function ChatInterface({ agentId }: ChatInterfaceProps) {
               <div className="flex justify-start">
                 <div className="max-w-[85%]">
                   <div className="bg-gray-800 px-4 py-3 rounded-2xl rounded-tl-none text-white shadow-sm">
+                    {message.toolCallSequence && message.toolCallSequence.length > 0 && (
+                      <div className="text-xs text-purple-300 mb-2 border-b border-purple-800 pb-1.5 font-mono">
+                        <span className="font-semibold">Thinking:</span> {message.toolCallSequence.join(' → ')}
+                      </div>
+                    )}
                     {message.content}
                   </div>
                   {message.timestamp && (

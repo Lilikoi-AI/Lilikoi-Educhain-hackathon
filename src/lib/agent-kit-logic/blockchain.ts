@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import * as subgraph from './subgraph';
-import { JsonRpcProvider, Contract, formatUnits, parseUnits, ZeroAddress } from 'ethers';
+import { JsonRpcProvider, Contract, formatUnits, parseUnits, ZeroAddress, Interface } from 'ethers';
 
 // Default RPC URL and chain ID
 let rpcUrl = 'https://rpc.edu-chain.raas.gelato.cloud';
@@ -466,6 +466,46 @@ export async function prepareSendErc20Tx(
         console.error("Error preparing send ERC20 transaction:", error);
         // Re-throw a more informative error if possible
         throw new Error(`Failed to prepare ERC20 transfer: ${(error as Error).message}`);
+    }
+}
+
+/**
+ * Prepare transaction data for approving an ERC20 token spender.
+ * @param tokenAddress The address of the ERC20 token contract.
+ * @param spenderAddress The address that will be approved to spend the tokens.
+ * @param amount The amount of tokens to approve (in human-readable format, e.g., "100.5"). Use ethers.MaxUint256.toString() for max approval.
+ */
+export async function prepareApproveTx(
+    tokenAddress: string,
+    spenderAddress: string,
+    amount: string 
+): Promise<{ to: string; data: string; value: string }> {
+    try {
+        const provider = getProvider();
+        const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+        const decimals = await tokenContract.decimals();
+
+        // Validate addresses
+        const tokenAddr = ethers.getAddress(tokenAddress);
+        const spenderAddr = ethers.getAddress(spenderAddress);
+
+        // Parse amount to wei
+        const amountWei = amount === ethers.MaxUint256.toString() 
+            ? ethers.MaxUint256 
+            : ethers.parseUnits(amount, Number(decimals));
+
+        // Encode the approve function data
+        const erc20Interface = new Interface(ERC20_ABI);
+        const data = erc20Interface.encodeFunctionData('approve', [spenderAddr, amountWei]);
+
+        return {
+            to: tokenAddr,    // Transaction goes TO the token contract
+            data: data,      // The encoded approve function call
+            value: '0',      // No native value sent for approve
+        };
+    } catch (error) {
+        console.error('Error preparing approve transaction:', error);
+        throw new Error(`Failed to prepare approve transaction: ${(error as Error).message}`);
     }
 }
 

@@ -7,7 +7,7 @@ import { ConnectKitProvider, getDefaultConfig } from 'connectkit';
 
 // Define EDU Chain network
 const eduChain = {
-  id: 656_476,
+  id: 41923,
   name: 'EDU Chain',
   network: 'educhain',
   nativeCurrency: {

@@ -11,27 +11,27 @@ const agentInfo = {
   bridging: {
     name: 'Bridging Agent',
     description: 'Bridge EDU tokens between Arbitrum and EDU Chain',
-    icon: '🌉',
+    // icon: '🌉',
   },
   transaction: {
     name: 'Transaction Agent',
     description: 'Send native EDU or ERC20 tokens on EDU Chain or Arbitrum',
-    icon: '💸',
+    // icon: '💸',
   },
   dex: {
     name: 'DEX Agent',
     description: 'Swap, wrap, or unwrap tokens on the EDU Chain DEX',
-    icon: '🔄',
+    // icon: '🔄',
   },
-  lp: {
-    name: 'LP Provisioning Agent',
-    description: 'Provide liquidity and earn rewards',
-    icon: '💧',
-  },
+  // lp: {
+  //   name: 'LP Provisioning Agent',
+  //   description: 'Provide liquidity and earn rewards',
+  //   icon: '💧',
+  // },
   utility: {
     name: 'Utility Agent',
     description: 'Access utilities and ecosystem features',
-    icon: '🛠️',
+    // icon: '🛠️',
   },
 };
 
@@ -89,8 +89,8 @@ export default function Page({ params }: AgentPageProps) {
       {/* Header */}
       <header className="border-b border-purple-900/40">
         <div className="max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
-          <Link href="/" className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-500">
-            Lilikoi
+          <Link href="/" className="flex items-center">
+             <img src="/LOGO.svg" alt="Lilikoi Logo" />
           </Link>
           <ConnectKitButton />
         </div>
@@ -109,7 +109,8 @@ export default function Page({ params }: AgentPageProps) {
                   : 'text-gray-400 hover:text-gray-200'
               }`}
             >
-              <span className="mr-2">{info.icon}</span>
+              {/* REMOVED: Icon rendering causing linter error */}
+              {/* <span className="mr-2">{info.icon}</span> */}
               {info.name}
             </Link>
           ))}

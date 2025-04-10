@@ -6,6 +6,10 @@ import * as blockchain from './blockchain.js';
 // SailFish V3 subgraph URL
 const SUBGRAPH_URL = 'https://api.goldsky.com/api/public/project_cm5nst0b7iiqy01t6hxww7gao/subgraphs/sailfish-v3-occ-mainnet/1.0.0/gn';
 
+// Wrapped EDU (WETH9) and USDC addresses
+const WETH_ADDRESS = '0xd02E8c38a8E3db71f8b2ae30B8186d7874934e12';
+const USDC_ADDRESS = '0x836d275563bAb5E93Fd6Ca62a95dB7065Da94342'; // Correct address from successful swap example
+
 // Query to find direct pools between two tokens
 const DIRECT_POOLS_QUERY = gql`
   query findDirectPools($token0: String!, $token1: String!) {
@@ -121,7 +125,8 @@ export interface PoolInfo {
 export interface RouteInfo {
   type: 'direct' | 'indirect';
   path: PoolInfo[];
-  intermediaryToken?: TokenInfo;
+  intermediaryToken?: TokenInfo; // First intermediary for 2-hop or 3-hop
+  intermediaryToken2?: TokenInfo; // Second intermediary for 3-hop
   totalFee: number;
 }
 
@@ -135,9 +140,14 @@ export interface RoutesResult {
  * Find all possible routes between two tokens
  * @param tokenInAddress The address of the input token
  * @param tokenOutAddress The address of the output token
+ * @param _allowThreeHopCheck Whether to allow 3-hop check
  * @returns All possible routes between the two tokens
  */
-export async function findAllRoutes(tokenInAddress: string, tokenOutAddress: string): Promise<RoutesResult> {
+export async function findAllRoutes(
+  tokenInAddress: string, 
+  tokenOutAddress: string,
+  _allowThreeHopCheck: boolean = true // Add parameter to prevent recursion
+): Promise<RoutesResult> {
   try {
     // First, try to find direct routes
     const directPools = await request<{ pools: PoolInfo[] }>(SUBGRAPH_URL, DIRECT_POOLS_QUERY, {
@@ -177,32 +187,56 @@ export async function findAllRoutes(tokenInAddress: string, tokenOutAddress: str
       };
     }
 
-    // If no direct routes, look for indirect routes
+    // If no direct routes, look for indirect routes (2-hop)
     const indirectPools = await request<{ pools0: PoolInfo[], pools1: PoolInfo[] }>(SUBGRAPH_URL, INDIRECT_POOLS_QUERY, {
       tokenIn: tokenInAddress.toLowerCase(),
       tokenOut: tokenOutAddress.toLowerCase(),
     });
 
-    // Find common tokens between pools containing tokenIn and tokenOut
     const intermediaryTokens = findIntermediaryTokens(
       indirectPools.pools0,
       indirectPools.pools1
     );
 
-    // Construct indirect routes
-    const routes = constructIndirectRoutes(
+    const indirectRoutes = constructIndirectRoutes(
       indirectPools.pools0,
       indirectPools.pools1,
       intermediaryTokens
     );
 
+    // If 2-hop routes exist, return them
+    if (indirectRoutes.length > 0) {
+       return {
+         type: 'indirect',
+         routes: indirectRoutes,
+       };
+    }
+    
+    // --- If no direct or 2-hop routes, try 3-hop via WEDU/USDC (if allowed) --- 
+    if (_allowThreeHopCheck) { 
+      console.log(`No direct or 2-hop route found for ${tokenInAddress} -> ${tokenOutAddress}. Trying 3-hop via WEDU/USDC...`);
+      const threeHopRoutes = await findThreeHopRoutes(tokenInAddress, tokenOutAddress);
+      if (threeHopRoutes.length > 0) {
+        console.log(`Found 3-hop routes for ${tokenInAddress} -> ${tokenOutAddress}`);
+        return {
+          type: 'indirect', // Still considered indirect
+          routes: threeHopRoutes,
+        };
+      }
+    } // --- End of 3-hop check ---
+    
+    // If no routes of any kind were found, return empty
+    console.log(`No routes found for ${tokenInAddress} -> ${tokenOutAddress} after all checks.`);
     return {
-      type: 'indirect',
-      routes: routes,
+        type: 'indirect', // Or 'direct', doesn't matter much here
+        routes: [],
     };
+
   } catch (error) {
+    // Catch errors during the subgraph requests or route construction
     console.error('Error finding routes:', error);
-    throw error;
+    // Re-throw the error to be handled by getBestRoute
+    throw new Error(`Failed to find any route: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -326,6 +360,88 @@ function constructIndirectRoutes(pools0: PoolInfo[], pools1: PoolInfo[], interme
       parseFloat(b.path[1].totalValueLockedUSD) -
       (parseFloat(a.path[0].totalValueLockedUSD) + parseFloat(a.path[1].totalValueLockedUSD))
   );
+}
+
+/**
+ * Attempt to find 3-hop routes: A -> WEDU -> USDC -> B or A -> USDC -> WEDU -> B
+ * This is a specific fallback and not a general multi-hop solution.
+ * @param tokenInAddress Original input token address
+ * @param tokenOutAddress Original output token address
+ * @returns Array of 3-hop RouteInfo objects or empty array if none found
+ */
+async function findThreeHopRoutes(tokenInAddress: string, tokenOutAddress: string): Promise<RouteInfo[]> {
+  const routesViaWeduUsdc = await findSpecificThreeHop(tokenInAddress, WETH_ADDRESS, USDC_ADDRESS, tokenOutAddress);
+  const routesViaUsdcWedu = await findSpecificThreeHop(tokenInAddress, USDC_ADDRESS, WETH_ADDRESS, tokenOutAddress);
+
+  const allThreeHopRoutes = [...routesViaWeduUsdc, ...routesViaUsdcWedu];
+
+  // Sort by total liquidity (sum of all three pools)
+  return allThreeHopRoutes.sort(
+    (a, b) =>
+      (parseFloat(b.path[0].totalValueLockedUSD) + parseFloat(b.path[1].totalValueLockedUSD) + parseFloat(b.path[2].totalValueLockedUSD)) -
+      (parseFloat(a.path[0].totalValueLockedUSD) + parseFloat(a.path[1].totalValueLockedUSD) + parseFloat(a.path[2].totalValueLockedUSD))
+  );
+}
+
+/**
+ * Helper to find a specific 3-hop route (A -> B -> C -> D)
+ */
+async function findSpecificThreeHop(
+  tokenA: string,
+  tokenB: string,
+  tokenC: string,
+  tokenD: string
+): Promise<RouteInfo[]> {
+  try {
+    // Find routes for each hop, disallowing further 3-hop checks
+    const routeAB = await findAllRoutes(tokenA, tokenB, false);
+    if (routeAB.routes.length === 0) return [];
+    const bestRouteAB = routeAB.routes[0]; // Use best liquidity for each segment
+
+    const routeBC = await findAllRoutes(tokenB, tokenC, false);
+    if (routeBC.routes.length === 0) return [];
+    const bestRouteBC = routeBC.routes[0];
+
+    const routeCD = await findAllRoutes(tokenC, tokenD, false);
+    if (routeCD.routes.length === 0) return [];
+    const bestRouteCD = routeCD.routes[0];
+
+    // Check if all segments are single-hop (simplification for now)
+    // A more robust solution would handle multi-hop segments within the 3-hop path
+    if (bestRouteAB.type !== 'direct' || bestRouteBC.type !== 'direct' || bestRouteCD.type !== 'direct') {
+      console.warn("Skipping 3-hop route construction because one segment is not direct.");
+      return [];
+    }
+
+    const poolAB = bestRouteAB.path[0];
+    const poolBC = bestRouteBC.path[0];
+    const poolCD = bestRouteCD.path[0];
+
+    // Reconstruct TokenInfo for intermediaries B and C
+    // Need to be careful about which field (token0/token1) holds B and C in their respective pools
+     const tokenBInfo = poolAB.token0.id.toLowerCase() === tokenB.toLowerCase() ? poolAB.token0 : poolAB.token1;
+     const tokenCInfo = poolBC.token0.id.toLowerCase() === tokenC.toLowerCase() ? poolBC.token0 : poolBC.token1;
+
+
+    return [{
+      type: 'indirect', // Mark as indirect
+      path: [poolAB, poolBC, poolCD], // Path includes all three pools
+      // Store both intermediaries? Or just mark as 3-hop?
+      // For now, let's adapt the existing structure. Maybe add a hopCount?
+      // We'll put the *first* intermediary (B) here for compatibility,
+      // but the path array has the full sequence.
+      intermediaryToken: tokenBInfo,
+      // Add tokenCInfo as another property if needed later
+      // intermediaryToken2: tokenCInfo,
+      intermediaryToken2: tokenCInfo, // Store the second intermediary
+      totalFee: (parseInt(poolAB.feeTier) + parseInt(poolBC.feeTier) + parseInt(poolCD.feeTier)) / 1000000, // Sum of fees
+    }];
+
+  } catch (error) {
+    // Don't throw, just return empty array if any segment fails
+    console.warn(`Could not find specific 3-hop route segment for ${tokenA}->${tokenB}->${tokenC}->${tokenD}:`, error);
+    return [];
+  }
 }
 
 /**

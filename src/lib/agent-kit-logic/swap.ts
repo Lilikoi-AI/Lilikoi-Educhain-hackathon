@@ -1459,14 +1459,11 @@ export async function prepareSwapEduForTokensTx(
                 sqrtPriceLimitX96: sqrtPriceLimitX96
             };
             data = routerInterface.encodeFunctionData("exactInputSingle", [params]);
-        } else { // Indirect (multi-hop)
-            if (!quote.route.intermediaryToken || quote.route.path.length < 2) {
-                 throw new Error('Invalid multi-hop route information in quote.');
-            }
+        } else if (quote.route.path.length === 2 && quote.route.intermediaryToken) { // Indirect (2-hop)
             const fee1 = parseInt(quote.route.path[0].feeTier);
             const fee2 = parseInt(quote.route.path[1].feeTier);
              if (isNaN(fee1) || isNaN(fee2)) {
-                 throw new Error('Could not parse fee tiers for multi-hop route.');
+                 throw new Error('Could not parse fee tiers for 2-hop route.');
             }
             const path = ethers.solidityPacked(
                 ['address', 'uint24', 'address', 'uint24', 'address'],
@@ -1486,6 +1483,35 @@ export async function prepareSwapEduForTokensTx(
                 amountOutMinimum: amountOutMinWei
             };
             data = routerInterface.encodeFunctionData("exactInput", [params]);
+        } else if (quote.route.path.length === 3 && quote.route.intermediaryToken && quote.route.intermediaryToken2) { // Indirect (3-hop)
+             const fee1 = parseInt(quote.route.path[0].feeTier);
+             const fee2 = parseInt(quote.route.path[1].feeTier);
+             const fee3 = parseInt(quote.route.path[2].feeTier);
+             if (isNaN(fee1) || isNaN(fee2) || isNaN(fee3)) {
+                 throw new Error('Could not parse fee tiers for 3-hop route.');
+             }
+             const path = ethers.solidityPacked(
+                 ['address', 'uint24', 'address', 'uint24', 'address', 'uint24', 'address'],
+                 [
+                     wethAddress, // Start with WETH
+                     fee1,
+                     ethers.getAddress(quote.route.intermediaryToken.address), // Intermediary 1
+                     fee2,
+                     ethers.getAddress(quote.route.intermediaryToken2.address), // Intermediary 2
+                     fee3,
+                     tokenOutAddr
+                 ]
+             );
+             const params = {
+                 path: path,
+                 recipient: recipientAddr,
+                 deadline: deadline,
+                 amountIn: amountInWei,
+                 amountOutMinimum: amountOutMinWei
+             };
+             data = routerInterface.encodeFunctionData("exactInput", [params]);
+        } else {
+            throw new Error('Unsupported route type or invalid route path length.');
         }
 
         return {
@@ -1545,7 +1571,7 @@ export async function prepareSwapTokensForEduTx(
         // Encode the swap part (recipient is the router itself for multicall)
         if (quote.route.type === 'direct') {
             const fee = parseInt(quote.route.path[0].feeTier);
-            if (isNaN(fee)) throw new Error('Could not parse fee tier from the quote route.');
+            if (isNaN(fee)) throw new Error('Could not parse fee tier from the direct route.');
             const params = {
                 tokenIn: tokenInAddr,
                 tokenOut: wethAddress,
@@ -1557,14 +1583,11 @@ export async function prepareSwapTokensForEduTx(
                 sqrtPriceLimitX96: sqrtPriceLimitX96
             };
             swapCalldata = routerInterface.encodeFunctionData("exactInputSingle", [params]);
-        } else { // Indirect (multi-hop)
-             if (!quote.route.intermediaryToken || quote.route.path.length < 2) {
-                 throw new Error('Invalid multi-hop route information in quote.');
-             }
+        } else if (quote.route.path.length === 2 && quote.route.intermediaryToken) { // Indirect (2-hop)
              const fee1 = parseInt(quote.route.path[0].feeTier);
              const fee2 = parseInt(quote.route.path[1].feeTier);
              if (isNaN(fee1) || isNaN(fee2)) {
-                 throw new Error('Could not parse fee tiers for multi-hop route.');
+                 throw new Error('Could not parse fee tiers for 2-hop route.');
              }
             const path = ethers.solidityPacked(
                 ['address', 'uint24', 'address', 'uint24', 'address'],
@@ -1584,10 +1607,38 @@ export async function prepareSwapTokensForEduTx(
                 amountOutMinimum: amountOutMinWei
             };
             swapCalldata = routerInterface.encodeFunctionData("exactInput", [params]);
+         } else if (quote.route.path.length === 3 && quote.route.intermediaryToken && quote.route.intermediaryToken2) { // Indirect (3-hop)
+             const fee1 = parseInt(quote.route.path[0].feeTier);
+             const fee2 = parseInt(quote.route.path[1].feeTier);
+             const fee3 = parseInt(quote.route.path[2].feeTier);
+             if (isNaN(fee1) || isNaN(fee2) || isNaN(fee3)) {
+                 throw new Error('Could not parse fee tiers for 3-hop route.');
+             }
+             const path = ethers.solidityPacked(
+                 ['address', 'uint24', 'address', 'uint24', 'address', 'uint24', 'address'],
+                 [
+                     tokenInAddr,
+                     fee1,
+                     ethers.getAddress(quote.route.intermediaryToken.address), // Intermediary 1
+                     fee2,
+                     ethers.getAddress(quote.route.intermediaryToken2.address), // Intermediary 2
+                     fee3,
+                     wethAddress // End with WETH
+                 ]
+             );
+             const params = {
+                 path: path,
+                 recipient: CONTRACTS.SwapRouter, // Output WETH to Router
+                 deadline: deadline,
+                 amountIn: amountInWei,
+                 amountOutMinimum: amountOutMinWei
+             };
+             swapCalldata = routerInterface.encodeFunctionData("exactInput", [params]);
+        } else {
+             throw new Error('Unsupported route type or invalid route path length.');
         }
 
         // Encode the unwrapWETH9 call (recipient is the final user)
-        // Use amountOutMinWei as the amount to unwrap to be safe
         const unwrapCalldata = routerInterface.encodeFunctionData("unwrapWETH9", [
             amountOutMinWei, 
             recipientAddr 
