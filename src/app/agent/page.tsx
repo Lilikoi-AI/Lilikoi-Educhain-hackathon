@@ -67,7 +67,7 @@ export default function AgentsPage() {
         <div className="flex items-center">
           <Link href="/" className="flex items-center space-x-2">
           <Link href="/" className="flex items-center">
-           <img src="/LOGO.svg" alt="Lilikoi Logo" />
+          <img src="/Lilikoi Logo (4).svg" alt="Lilikoi Logo" className="w-24 h-24 " />
         </Link>
           </Link>
         </div>

@@ -12,25 +12,25 @@ const agents = [
     id: 'bridging',
     name: 'Bridging Agent',
     description: 'Bridge EDU between Arbitrum & EDU Chain',
-    icon: '🌉',
+    // icon: '🌉',
   },
   {
     id: 'transaction',
     name: 'Transaction Agent',
     description: 'Send EDU or ERC20 tokens on EDU Chain / Arbitrum',
-    icon: '💸',
+    // icon: '💸',
   },
   {
     id: 'dex',
     name: 'DEX Agent',
     description: 'Swap, wrap, or get quotes on EDU Chain DEX',
-    icon: '📈',
+    // icon: '📈',
   },
   {
     id: 'utility',
     name: 'Utility & Info Agent',
     description: 'Check balances, prices, TVL, etc.',
-    icon: '🛠️',
+    // icon: '🛠️',
   },
   // {
   //   id: 'lp',
@@ -45,19 +45,19 @@ const recentActivities = [
     title: 'Bridge Bot',
     description: 'Fastest route to Arbitrum',
     agentId: 'bridging',
-    icon: '🌉',
+    // icon: '🌉',
   },
   {
-    title: 'LP Finder',
-    description: '3 pools match your profile',
+    title: 'DEX Agent',
+    description: 'Swap, wrap, or Unwrap tokens on EDU Chain DEX',
     agentId: 'dex',
-    icon: '💧',
+    // icon: '💧',
   },
   {
     title: 'Utility',
-    description: 'EDU price',
+    description: 'EDU price, Token History, Best Pools, etc.',
     agentId: 'utility',
-    icon: '🛠️',
+    // icon: '🛠️',
   },
 ];
 
@@ -74,6 +74,7 @@ export default function Home() {
   const { address, isConnected, chain } = useAccount();
   const [walletConnected, setWalletConnected] = useState(false);
   const [isClient, setIsClient] = useState(false);
+  const [lilikoiScore, setLilikoiScore] = useState<number | null>(null);
   
   // Update wallet connection status when wagmi state changes
   useEffect(() => {
@@ -84,6 +85,18 @@ export default function Home() {
   useEffect(() => {
     setIsClient(true);
   }, []);
+
+  // Simulate calculating score on mount
+  useEffect(() => {
+    if (isClient) {
+      // Replace with actual calculation logic if available
+      // Calculate random score between 50 and 90 (inclusive)
+      const minScore = 50;
+      const maxScore = 90;
+      const calculatedScore = Math.floor(Math.random() * (maxScore - minScore + 1)) + minScore;
+      setLilikoiScore(calculatedScore);
+    }
+  }, [isClient]);
 
   const isEduChain = chain?.id === EDUCHAIN_CHAIN_ID;
 
@@ -125,7 +138,7 @@ export default function Home() {
       {/* Navigation Bar */}
       <nav className="max-w-6xl mx-auto py-4 px-8 flex justify-between items-center border border-gray-800 rounded-full mt-4 bg-[#17171a]">
         <Link href="/" className="flex items-center">
-           <img src="/LOGO.svg" alt="Lilikoi Logo" />
+           <img src="/Lilikoi Logo (4).svg" alt="Lilikoi Logo" className="w-24 h-24 " />
         </Link>
         
         <div className="flex space-x-8">
@@ -162,20 +175,22 @@ export default function Home() {
       
       {/* Main Content */}
       <div className="max-w-6xl mx-auto px-8">
-        {/* Lilikoi Score Card */}
-        <div className="relative bg-gradient-to-r from-purple-600 to-blue-600 rounded-3xl p-8 mb-8 overflow-hidden">
+        {/* Lilikoi Score Card - Reduced padding and text sizes */}
+        <div className="relative bg-gradient-to-r from-purple-600 to-blue-600 rounded-3xl p-6 mb-8 overflow-hidden">
           <div className="z-10 relative">
-            <h2 className="text-2xl font-semibold mb-2">Lilikoi Score</h2>
+            <h2 className="text-xl font-semibold mb-1">Lilikoi Score</h2>
             <div className="flex items-end">
-              <span className="text-7xl font-bold">78</span>
-              <span className="text-3xl mb-2 ml-2">/ 100</span>
+              <span className="text-6xl font-bold">
+                {lilikoiScore !== null ? lilikoiScore : '--'}
+              </span>
+              <span className="text-2xl mb-1 ml-2">/ 100</span>
             </div>
-            <p className="text-white/80 mt-1">Based on your DeFi actions</p>
+            <p className="text-sm text-white/80 mt-1">Based on your DeFi actions</p>
           </div>
-          <div className="absolute right-10 top-1/2 transform -translate-y-1/2">
-            <div className="w-32 h-32 relative">
-              <div className="absolute inset-0 rounded-full border-2 border-dashed border-blue-300/30"></div>
-              <div className="absolute inset-4">
+          <div className="absolute right-8 top-1/2 transform -translate-y-1/2">
+            <div className="w-24 h-24 relative">
+              <div className="absolute inset-0 rounded-full border border-dashed border-blue-300/30"></div>
+              <div className="absolute inset-3">
                 <div className="w-full h-full bg-gradient-to-br from-purple-400 to-blue-400 opacity-80 rounded-lg transform rotate-45"></div>
               </div>
             </div>
@@ -184,12 +199,18 @@ export default function Home() {
         
         {/* Two Column Layout */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
-          {/* Balance Section - Updated */}
+          {/* Image container with fixed height */}
+          <div className="relative w-full h-[500px] rounded-3xl overflow-hidden border border-gray-800">
+            <Image
+              src="/Lilikoi-image.jpg"
+              alt="Lilikoi DeFi Brain concept image"
+              fill
+              className="object-contain"
+            />
+          </div>
+          {/* 
           <div className="bg-[#17171a] rounded-3xl p-6 border border-gray-800">
             <h2 className="text-xl font-semibold mb-4">Balance (EduChain)</h2>
-            {/* Omit Total Balance for now */}
-            {/* <p className="text-4xl font-bold text-[#3CBEB0] mb-6">$13,200.245</p> */}
-            
             <div className="space-y-4 mt-6">
               {!isClient || !isConnected ? (
                 <p className="text-gray-400">Connect wallet to view balance.</p>
@@ -209,22 +230,14 @@ export default function Home() {
                         {formattedUsdcBalance}
                     </span>
                   </div>
-                  {/* Add more tokens here if needed using useReadContract */}
-                  {/* <div className="flex justify-between items-center">
-                    <span className="text-lg">ETH</span>
-                    <span className="text-lg text-[#3CBEB0]">$1800.20</span> // Placeholder
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-lg">ARB</span>
-                    <span className="text-lg text-[#3CBEB0]">$2300.00</span> // Placeholder
-                  </div> */}
                 </>
               )}
             </div>
           </div>
+           */}
           
-          {/* Recent Activity Section */}
-          <div className="bg-[#17171a] rounded-3xl p-6 border border-gray-800">
+          {/* Recent Activity Section - Added matching fixed height */}
+          <div className="bg-[#17171a] rounded-3xl p-6 border border-gray-800 h-[500px]">
             <h2 className="text-xl font-semibold mb-4">Recent Activity</h2>
             
             <div className="space-y-4">
@@ -236,9 +249,7 @@ export default function Home() {
                 >
                   <div className="flex items-center">
                     <div className="bg-[#2a2a35] p-3 rounded-xl mr-4">
-                      <div className="w-6 h-6 flex items-center justify-center bg-blue-600 rounded-md">
-                        <span>{activity.icon}</span>
-                      </div>
+                      <img src="/bot-icon.svg" alt="Activity icon" className="w-6 h-6" />
                     </div>
                     <div>
                       <p className="font-medium">{activity.title}</p>
@@ -246,6 +257,7 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="text-gray-400">
+                    {/* Arrow Icon */}
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M9 18l6-6-6-6" />
                     </svg>
@@ -276,9 +288,7 @@ export default function Home() {
               href={`/agent/${agent.id}`}
               className="block p-6 rounded-xl bg-[#17171a] hover:bg-[#1c1c24] transition-colors border border-gray-800"
             >
-              <div className="bg-[#2a2a35] inline-flex p-3 rounded-xl mb-4">
-                <span className="text-2xl">{agent.icon}</span>
-              </div>
+              <img src="/bot-icon.svg" alt="Agent icon" className="w-8 h-8 mb-4 p-1 bg-[#2a2a35] rounded-lg" />
               <h2 className="text-xl font-semibold mb-2">{agent.name}</h2>
               <p className="text-gray-400">{agent.description}</p>
             </Link>
