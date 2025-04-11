@@ -22,6 +22,10 @@ const agentExamples = {
   utility: [
     'Gas price on Arbitrum',
     'Current price of EDU?'
+  ],
+  'sailfish-bridging': [
+    'Bridge 100 EDU from Arbitrum to EDU Chain',
+    'Estimate fee for bridging 50 EDU'
   ]
 };
 
@@ -54,6 +58,13 @@ const agents = [
     description: 'Send EDU or ERC20 tokens on EDU Chain / Arbitrum with simple commands.',
     icon: '💸',
     color: 'text-[#F0B86E]'
+  },
+  {
+    id: 'sailfish-bridging',
+    name: 'Sailfish Bridging agent',
+    description: 'Bridge EDU tokens between Arbitrum and EDU Chain using the Sailfish SDK.',
+    icon: '🌁',
+    color: 'text-[#6E88F0]'
   }
 ];
 

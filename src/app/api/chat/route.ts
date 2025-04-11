@@ -3,6 +3,14 @@ import { NextResponse } from 'next/server';
 import { BridgeMCP } from '@/mcp/bridge';
 import * as agentKit from '@/lib/agent-kit-logic';
 import { ethers } from 'ethers';
+import { SailfishBridge } from '@/lib/sailfish-bridge-logic';
+import { Bridge } from '@/lib/bridge-logic';
+
+// BSC OFT ABI used for bridging
+const BSC_ABI = [
+  "function estimateSendFee(uint16 dstChainId, bytes calldata toAddress, uint256 amount, bool useZro, bytes calldata adapterParams) external view returns (uint256 nativeFee, uint256 zroFee)",
+  "function sendFrom(address from, uint16 dstChainId, bytes calldata toAddress, uint256 amount, address payable refundAddress, address zroPaymentAddress, bytes calldata adapterParams) external payable"
+];
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -16,6 +24,24 @@ type InfoAction =
     'get_swap_quote' | 
     'get_external_market_data' | 'check_arbitrage_opportunities' | 'get_external_market_config' | 
     'get_rpc_url'; 
+
+// Define Sailfish action types
+type SailfishAction = 
+    // Arb <-> Edu Chain
+    'sailfish_is_edu_approved' | 
+    'sailfish_approve_edu' | 
+    'sailfish_bridge_from_arb' | 
+    'sailfish_bridge_from_edu' | 
+    'sailfish_estimate_bridge_fee' | 
+    'sailfish_has_enough_edu_on_arb' | // New
+    
+    // BSC -> Arbitrum
+    'sailfish_is_edu_approved_on_bsc' | 
+    'sailfish_approve_edu_on_bsc' | 
+    'sailfish_estimate_bridge_fee_bsc_to_arb' | 
+    'sailfish_bridge_from_bsc_to_arb' | 
+    'sailfish_has_enough_edu_on_bsc' | // New
+    'sailfish_has_enough_bnb';         // New
     
 type TransactionAction = 
     BridgeAction | 
@@ -23,7 +49,7 @@ type TransactionAction =
     'swap_tokens' | 'swap_edu_for_tokens' | 'swap_tokens_for_edu' | 
     'wrap_edu' | 'unwrap_wedu';
     
-type Action = TransactionAction | InfoAction;
+type Action = TransactionAction | InfoAction | SailfishAction;
 
 const internalInfoTools: { [K in InfoAction]?: (...args: any[]) => Promise<any> } = {
     get_token_price: agentKit.getTokenPrice,
@@ -55,6 +81,119 @@ const internalTxPrepTools: { [K in Exclude<TransactionAction, BridgeAction>]?: (
     swap_tokens_for_edu: agentKit.prepareSwapTokensForEduTx,
     wrap_edu: agentKit.prepareWrapEduTx,
     unwrap_wedu: agentKit.prepareUnwrapWeduTx,
+};
+
+// Implement Sailfish bridging tools
+const internalSailfishTools: { [K in SailfishAction]?: (...args: any[]) => Promise<any> } = {
+  sailfish_is_edu_approved: async (amount: string, ownerAddress: string, sourceChain: string) => {
+    if (sourceChain !== 'arbitrum') {
+      throw new Error('Currently only Arbitrum source chain is supported for approval checks');
+    }
+    
+    // Create a provider for Arbitrum
+    const provider = new ethers.JsonRpcProvider(process.env.ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc');
+    const bridge = new SailfishBridge(provider);
+    
+    const result = await bridge.isEduApprovedOnArb(ownerAddress, amount);
+    return { approved: result };
+  },
+  
+  sailfish_approve_edu: async (amount: string, sourceChain: string) => {
+    if (sourceChain !== 'arbitrum') {
+      throw new Error('Currently only Arbitrum source chain is supported for approvals');
+    }
+    
+    // Create a provider for Arbitrum
+    const provider = new ethers.JsonRpcProvider(process.env.ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc');
+    const bridge = new SailfishBridge(provider);
+    
+    const txData = await bridge.prepareApproveEduOnArb();
+    return txData;
+  },
+  
+  sailfish_bridge_from_arb: async (amount: string, address: string) => {
+    // Create a provider for Arbitrum
+    const provider = new ethers.JsonRpcProvider(process.env.ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc');
+    const bridge = new SailfishBridge(provider);
+    
+    const txData = await bridge.prepareBridgeEduFromArbToEdu(amount);
+    return txData;
+  },
+  
+  sailfish_bridge_from_edu: async (amount: string, address: string) => {
+    // This is a placeholder for bridging from EDU to Arbitrum
+    // Not yet implemented in the SDK
+    throw new Error('Bridging from EDU to Arbitrum not yet implemented');
+  },
+  
+  sailfish_estimate_bridge_fee: async (amount: string, sourceChain: string, targetChain: string) => {
+    if (sourceChain !== 'arbitrum' || targetChain !== 'educhain') {
+      throw new Error('Currently only Arbitrum to EDU Chain is supported for fee estimation');
+    }
+    
+    // Placeholder for fee estimation from Arbitrum to EDU Chain
+    return { fee: "0.001", currency: "ETH" };
+  },
+  
+  // BSC to Arbitrum bridging tools
+  sailfish_is_edu_approved_on_bsc: async (amount: string, ownerAddress: string) => {
+    // Create a provider for BSC
+    const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org');
+    const bridge = new Bridge(provider);
+    
+    const result = await bridge.isEduApprovedOnBsc(ownerAddress, amount);
+    return { approved: result };
+  },
+  
+  sailfish_approve_edu_on_bsc: async () => {
+    // Create a provider for BSC
+    const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org');
+    const bridge = new Bridge(provider);
+    
+    const txData = await bridge.approveEduOnBsc();
+    return txData;
+  },
+  
+  sailfish_estimate_bridge_fee_bsc_to_arb: async (amount: string, address: string, gasOnDestination: string = "0.0005") => {
+    // Create a provider for BSC
+    const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org');
+    const bridge = new Bridge(provider);
+    
+    // Call the estimateBridgeFee method (which will now handle errors gracefully)
+    const fee = await bridge.estimateBridgeFee(amount, address, gasOnDestination);
+    return { fee, currency: "BNB" }; // Return the estimated (or default) fee
+  },
+  
+  sailfish_bridge_from_bsc_to_arb: async (amount: string, address: string, gasOnDestination: string = "0.0005") => {
+    // Create a provider for BSC
+    const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org');
+    const bridge = new Bridge(provider);
+    
+    const txData = await bridge.bridgeEduFromBscToArb(amount, address, gasOnDestination);
+    return txData;
+  },
+  
+  sailfish_has_enough_edu_on_bsc: async (amount: string, ownerAddress: string) => {
+    const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org');
+    const bridge = new Bridge(provider);
+    const result = await bridge.hasEnoughEdu(ownerAddress, amount); // Corrected: hasEnoughEdu
+    return { hasEnough: result };
+  },
+  
+  sailfish_has_enough_bnb: async (fee: string, ownerAddress: string) => {
+    const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org');
+    const bridge = new Bridge(provider);
+    // Corrected: hasEnoughBnb, parameter name is 'fee'
+    const result = await bridge.hasEnoughBnb(ownerAddress, fee); 
+    return { hasEnough: result };
+  },
+
+  sailfish_has_enough_edu_on_arb: async (amount: string, ownerAddress: string) => {
+    const provider = new ethers.JsonRpcProvider(process.env.ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc');
+    const bridge = new Bridge(provider); // Bridge class now handles both BSC and Arb checks
+    const result = await bridge.hasEnoughEduOnArb(ownerAddress, amount);
+    return { hasEnough: result };
+  }
 };
 
 // --- Constants ---
@@ -240,6 +379,142 @@ const utilityTools: Anthropic.Tool[] = [
     getExternalMarketConfigSchema, getRpcUrlSchema
 ];
 
+// --- NEW: Sailfish Bridge Tool Schemas ---
+const sailfish_estimate_bridge_fee_schema: Anthropic.Tool = {
+    name: "sailfish_estimate_bridge_fee",
+    description: "Estimate the fee for bridging EDU tokens between Arbitrum and EDU Chain using the Sailfish SDK.",
+    input_schema: {
+        type: "object",
+        properties: {
+            amount: { type: "string", description: "The amount of EDU to bridge." },
+            recipient: { type: "string", description: "The recipient address on the destination chain." },
+            sourceChain: { type: "string", enum: ["arbitrum", "educhain"], description: "The source chain ('arbitrum' or 'educhain')." }
+        },
+        required: ["amount", "recipient", "sourceChain"]
+    }
+};
+
+const sailfish_is_edu_approved_schema: Anthropic.Tool = {
+    name: "sailfish_is_edu_approved",
+    description: "Check if the Sailfish bridge contract is approved to spend the specified amount of EDU ERC20 tokens on behalf of the user on the source chain.",
+    input_schema: {
+        type: "object",
+        properties: {
+            amount: { type: "string", description: "The amount of EDU to check approval for." },
+            ownerAddress: { type: "string", description: "The user's wallet address." },
+            sourceChain: { type: "string", enum: ["arbitrum", "educhain"], description: "The source chain where the EDU ERC20 token exists ('arbitrum' or 'educhain')." }
+        },
+        required: ["amount", "ownerAddress", "sourceChain"]
+    }
+};
+
+const sailfish_approve_edu_schema: Anthropic.Tool = {
+    name: "sailfish_approve_edu",
+    description: "Prepare the transaction to approve the Sailfish bridge contract to spend the user's EDU ERC20 tokens on the source chain.",
+    input_schema: {
+        type: "object",
+        properties: {
+            amount: { type: "string", description: "The amount of EDU to approve." },
+            sourceChain: { type: "string", enum: ["arbitrum", "educhain"], description: "The source chain where the approval should happen ('arbitrum' or 'educhain')." }
+        },
+        required: ["amount", "sourceChain"]
+    }
+};
+
+const sailfish_bridge_from_arb_schema: Anthropic.Tool = {
+    name: "sailfish_bridge_from_arb",
+    description: "Prepare the transaction to bridge EDU ERC20 tokens FROM Arbitrum TO EDU Chain using the Sailfish SDK.",
+    input_schema: {
+        type: "object",
+        properties: {
+            amount: { type: "string", description: "The amount of EDU to bridge." },
+            recipient: { type: "string", description: "The recipient address on EDU Chain." }
+        },
+        required: ["amount", "recipient"]
+    }
+};
+
+const sailfish_bridge_from_edu_schema: Anthropic.Tool = {
+    name: "sailfish_bridge_from_edu",
+    description: "Prepare the transaction to bridge native EDU tokens FROM EDU Chain TO Arbitrum using the Sailfish SDK.", // Assuming it handles native EDU from EduChain
+    input_schema: {
+        type: "object",
+        properties: {
+            amount: { type: "string", description: "The amount of native EDU to bridge." },
+            recipient: { type: "string", description: "The recipient address on Arbitrum." }
+        },
+        required: ["amount", "recipient"]
+    }
+};
+
+// --- NEW: BSC to Arbitrum Bridge Tool Schemas ---
+const sailfish_is_edu_approved_on_bsc_schema: Anthropic.Tool = {
+    name: "sailfish_is_edu_approved_on_bsc",
+    description: "Check if the bridge contract is approved to spend the specified amount of EDU ERC20 tokens on behalf of the user on BSC.",
+    input_schema: {
+        type: "object",
+        properties: {
+            amount: { type: "string", description: "The amount of EDU to check approval for." },
+            ownerAddress: { type: "string", description: "The user's wallet address." }
+        },
+        required: ["amount", "ownerAddress"]
+    }
+};
+
+const sailfish_approve_edu_on_bsc_schema: Anthropic.Tool = {
+    name: "sailfish_approve_edu_on_bsc",
+    description: "Prepare the transaction to approve the bridge contract to spend the user's EDU ERC20 tokens on BSC.",
+    input_schema: {
+        type: "object",
+        properties: {
+            amount: { type: "string", description: "The amount of EDU to approve." }
+        },
+        required: ["amount"]
+    }
+};
+
+const sailfish_estimate_bridge_fee_bsc_to_arb_schema: Anthropic.Tool = {
+    name: "sailfish_estimate_bridge_fee_bsc_to_arb",
+    description: "Estimate the fee for bridging EDU tokens from BSC to Arbitrum using the Sailfish SDK.",
+    input_schema: {
+        type: "object",
+        properties: {
+            amount: { type: "string", description: "The amount of EDU to bridge." },
+            address: { type: "string", description: "The recipient address on Arbitrum." },
+            gasOnDestination: { type: "string", description: "Optional: Amount of ETH to airdrop for gas on Arbitrum." }
+        },
+        required: ["amount", "address"]
+    }
+};
+
+const sailfish_bridge_from_bsc_to_arb_schema: Anthropic.Tool = {
+    name: "sailfish_bridge_from_bsc_to_arb",
+    description: "Prepare the transaction to bridge EDU ERC20 tokens FROM BSC TO Arbitrum using the Sailfish SDK.",
+    input_schema: {
+        type: "object",
+        properties: {
+            amount: { type: "string", description: "The amount of EDU to bridge." },
+            address: { type: "string", description: "The recipient address on Arbitrum." },
+            gasOnDestination: { type: "string", description: "Optional: Amount of ETH to airdrop for gas on Arbitrum." }
+        },
+        required: ["amount", "address"]
+    }
+};
+
+// List of tools for the new agent
+const sailfishBridgingTools: Anthropic.Tool[] = [
+    sailfish_estimate_bridge_fee_schema,
+    sailfish_is_edu_approved_schema,
+    sailfish_approve_edu_schema,
+    sailfish_bridge_from_arb_schema,
+    sailfish_bridge_from_edu_schema,
+    // New BSC to Arbitrum tools
+    sailfish_is_edu_approved_on_bsc_schema,
+    sailfish_approve_edu_on_bsc_schema,
+    sailfish_estimate_bridge_fee_bsc_to_arb_schema,
+    sailfish_bridge_from_bsc_to_arb_schema
+];
+
 // --- System Prompts (Grouped by Agent) ---
 const SYSTEM_PROMPT_BRIDGING = `You are Lilikoi's Bridging Agent. You help users bridge their EDU ERC20 tokens (${ARBITRUM_EDU_TOKEN_ADDRESS}) between Arbitrum (ID ${ARBITRUM_CHAIN_ID}) and EDU Chain (ID ${EDUCHAIN_CHAIN_ID}).
  
@@ -253,7 +528,24 @@ const SYSTEM_PROMPT_BRIDGING = `You are Lilikoi's Bridging Agent. You help users
  2. Inform the user that the tokens will be available on Arbitrum after the withdrawal is confirmed.
  
  Always clarify the direction and amount if the user's request is unclear. Use only the provided tools: approve, deposit, withdraw.`;
-const SYSTEM_PROMPT_TRANSACTION = `You are Lilikoi's Transaction Agent... focus ONLY on sending native EDU (on EDU Chain ${EDUCHAIN_CHAIN_ID}) using 'send_edu' OR the EDU ERC20 token (${ARBITRUM_EDU_TOKEN_ADDRESS}) on Arbitrum (${ARBITRUM_CHAIN_ID}) using 'send_erc20_token'. Ask for recipient and amount if missing.`;
+const SYSTEM_PROMPT_TRANSACTION = `You are Lilikoi's Transaction Agent. Your purpose is solely to facilitate the sending of funds using the 'send_edu' tool for native EDU on EDU Chain (ID ${EDUCHAIN_CHAIN_ID}) or the 'send_erc20_token' tool for ERC20 tokens.
+
+You can send the following tokens:
+- Native EDU (on EDU Chain ${EDUCHAIN_CHAIN_ID}) using 'send_edu'.
+- ERC20 Tokens (using 'send_erc20_token') like:
+  - EDU on Arbitrum (ID ${ARBITRUM_CHAIN_ID}, Address: ${ARBITRUM_EDU_TOKEN_ADDRESS})
+  - USDC on Arbitrum (ID ${ARBITRUM_CHAIN_ID}, Address: 0xaf88d065e77c8cC2239327C5EDb3A432268e5831)
+  - USDC on EDU Chain (ID ${EDUCHAIN_CHAIN_ID}, Address: 0x836d275563bAb5E93Fd6Ca62a95dB7065Da94342)
+  - USDT on EDU Chain (ID ${EDUCHAIN_CHAIN_ID}, Address: 0x7277Cc818e3F3FfBb169c6Da9CC77Fc2d2a34895)
+  - Other standard ERC20s primarily assumed to be on EDU Chain unless specified otherwise (e.g., 'on Arbitrum').
+
+IMPORTANT:
+- For ERC20 tokens, clearly identify the token (e.g., 'USDC', 'EDU') and the network ('Arbitrum' or 'EDU Chain'). If the network is not specified, assume EDU Chain unless it's the specific Arbitrum EDU token.
+- Use ONLY the 'send_erc20_token' tool for sending ERC20 tokens.
+- Use ONLY the 'send_edu' tool for sending native EDU.
+- Do not combine sending actions with other operations like swapping or bridging in the same request.
+
+Always ask for the token name/symbol, the network (if ambiguous), the recipient address, and the amount if not provided.`;
 const SYSTEM_PROMPT_DEX = `You are Lilikoi's DEX Agent on the EDU Chain (ID ${EDUCHAIN_CHAIN_ID}). Your goal is to help users swap tokens, wrap/unwrap EDU, or get quotes.
 
 When a user asks to swap tokens (e.g., "swap 0.1 EDU for USDC" or "swap 5 WETH for DAI"):
@@ -287,13 +579,52 @@ Your goal is to present this data clearly and concisely to the user. Follow thes
 
 ALWAYS use the tools provided to get the latest information before answering the user's question. Do not make up data.`;
 
+// --- NEW: Sailfish Bridging Agent System Prompt ---
+const SYSTEM_PROMPT_SAILFISH_BRIDGING = `You are Lilikoi's Sailfish Bridging Agent. Your goal is to help users bridge EDU tokens between chains (BSC, Arbitrum, and EDU Chain) using the Sailfish SDK tools.
+
+Supported Directions:
+- BSC (EDU ERC20) -> Arbitrum (EDU ERC20) 
+- Arbitrum (EDU ERC20) -> EDU Chain (Native EDU)
+- EDU Chain (Native EDU) -> Arbitrum (EDU ERC20) - (Bridging FROM EDU Chain is not fully implemented yet, inform user if asked)
+
+General Bridging Steps (Follow STRICTLY):
+1.  **Identify:** Ask the user for the source chain, destination chain, amount, and destination address if not provided.
+2.  **Estimate Fee & Check Balances (Crucial Pre-check for BSC->Arb):**
+    *   For BSC -> Arbitrum: 
+        a. First, use 'sailfish_estimate_bridge_fee_bsc_to_arb' to get the estimated BNB fee. Inform the user.
+        b. THEN, use 'sailfish_has_enough_edu_on_bsc' to check the EDU amount.
+        c. THEN, use 'sailfish_has_enough_bnb' using the fee estimated in step 2a.
+        d. **Confirm BOTH balances (EDU and BNB) are sufficient before proceeding.** If not, inform the user clearly and STOP.
+    *   For Arbitrum -> EDU Chain: Use 'sailfish_has_enough_edu_on_arb' for the EDU amount. **Confirm sufficiency before proceeding.** If not, inform user and STOP.
+3.  **Check Approval (Mandatory before bridging):**
+    *   For BSC -> Arbitrum: Use 'sailfish_is_edu_approved_on_bsc'.
+    *   For Arbitrum -> EDU Chain: Use 'sailfish_is_edu_approved' (with sourceChain='arbitrum').
+4.  **Request Approval (If needed):**
+    *   For BSC -> Arbitrum: Use 'sailfish_approve_edu_on_bsc'. Explain this prepares a transaction for the user to sign.
+    *   For Arbitrum -> EDU Chain: Use 'sailfish_approve_edu' (with sourceChain='arbitrum'). Explain this prepares a transaction.
+    *   **Wait for user confirmation of approval transaction success before proceeding.**
+5.  **Execute Bridge (Final Step):**
+    *   For BSC -> Arbitrum: Use 'sailfish_bridge_from_bsc_to_arb'. Provide amount, address, and optionally gasOnDestination. Explain this prepares the final bridge transaction.
+    *   For Arbitrum -> EDU Chain: Use 'sailfish_bridge_from_arb'. Provide amount and address. Explain this prepares the final bridge transaction.
+    *   For EDU Chain -> Arbitrum: Inform the user this direction is not yet supported.
+
+Important Notes:
+- ALWAYS confirm the user's wallet address if relevant checks require it.
+- Do NOT proceed if any check (balance, approval) fails.
+- Clearly explain each step and what the user needs to do (e.g., sign a transaction).
+- When providing transaction data (approve, bridge), explain its purpose clearly.
+- For BSC->Arb, the fee is included in the transaction VALUE. For Arb->Edu, the fee is standard ETH gas.
+- Be precise and follow the steps in order.`;
+
 // --- Map Agent IDs to their configs --- 
 const agentConfigs: { [key: string]: { tools: Anthropic.Tool[], prompt: string } } = {
     bridging: { tools: bridgingTools, prompt: SYSTEM_PROMPT_BRIDGING },
     transaction: { tools: transactionTools, prompt: SYSTEM_PROMPT_TRANSACTION },
     dex: { tools: dexTools, prompt: SYSTEM_PROMPT_DEX },
-    utility: { tools: utilityTools, prompt: SYSTEM_PROMPT_UTILITY }, // Added utility
-    // Fallback / default agent config - maybe map to utility?
+    utility: { tools: utilityTools, prompt: SYSTEM_PROMPT_UTILITY },
+    // NEW AGENT:
+    'sailfish-bridging': { tools: sailfishBridgingTools, prompt: SYSTEM_PROMPT_SAILFISH_BRIDGING }, 
+    // Fallback / default agent config
     default: { tools: utilityTools, prompt: SYSTEM_PROMPT_UTILITY }, 
 };
 
@@ -301,12 +632,25 @@ const agentConfigs: { [key: string]: { tools: Anthropic.Tool[], prompt: string }
 const TOKEN_NAME_TO_ADDRESS_MAP: { [key: string]: string } = {
     edu: WEDU_ADDRESS, // Assuming native EDU price is tracked via WEDU
     wedu: WEDU_ADDRESS,
-    // Add other common tokens
-    usdc: '0x836d275563bAb5E93Fd6Ca62a95dB7065Da94342', // EDU Chain USDC - Reverted to correct address
-    usdt: '0x7277Cc818e3F3FfBb169c6Da9CC77Fc2d2a34895', // EDU Chain USDT - Assuming this is correct
-    weth: '0x79C428A058625387c71F684BA5980414aF38b0d6', // EDU Chain WETH
-    wbtc: '0x5D049c53F1dFCB8C4328554854fe44D5C48e5461'  // EDU Chain WBTC
+    // EDU Chain Tokens
+    usdc_educhain: '0x836d275563bAb5E93Fd6Ca62a95dB7065Da94342', 
+    usdc: '0x836d275563bAb5E93Fd6Ca62a95dB7065Da94342', // Also allow 'usdc' for EDU Chain default
+    usdt_educhain: '0x7277Cc818e3F3FfBb169c6Da9CC77Fc2d2a34895',
+    usdt: '0x7277Cc818e3F3FfBb169c6Da9CC77Fc2d2a34895', // Also allow 'usdt' for EDU Chain default
+    weth: '0x79C428A058625387c71F684BA5980414aF38b0d6', 
+    wbtc: '0x5D049c53F1dFCB8C4328554854fe44D5C48e5461',
+    // Arbitrum Tokens
+    edu_arbitrum: ARBITRUM_EDU_TOKEN_ADDRESS,
+    usdc_arbitrum: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+    // Note: Add BSC addresses if needed later
 };
+
+// Keep track of known Arbitrum token addresses (lowercase)
+const ARBITRUM_TOKEN_ADDRESSES = new Set([
+    ARBITRUM_EDU_TOKEN_ADDRESS.toLowerCase(),
+    '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // USDC on Arbitrum
+    // Add other known Arbitrum token addresses here
+].map(addr => addr.toLowerCase()));
 
 export async function POST(request: Request) {
   const { agentId = 'default', userMessage, address, // Removed forceAction and amount for now, handle differently if needed
@@ -339,11 +683,11 @@ export async function POST(request: Request) {
     let finalAction: string | null = null;
     let targetChainId: number | null = null; 
     let savedToolInput: Record<string, any> | null = null;
-    const MAX_TOOL_CALLS = 5; // Limit loops
+    const MAX_TOOL_CALLS = 10; // Limit loops (Increased from 5)
     let lastToolResultContent: any = null; // Track last result
     let lastToolNameCalled: string | null = null; // Track last tool name
     let lastIterationHadError = false; // Track last error status
-    const toolCallSequence: string[] = []; // <-- Add array to track tool calls
+    let toolCallSequence: string[] = []; // <-- Add array to track tool calls
 
   try {
       for (let i = 0; i < MAX_TOOL_CALLS; i++) {
@@ -392,18 +736,24 @@ export async function POST(request: Request) {
                   savedToolInput = { ...toolInput }; // Save input for frontend context
                   
                   // --- Determine Target Chain ID --- 
-                  targetChainId = EDUCHAIN_CHAIN_ID; // Default assumption for DEX/Transaction unless specified
+                  targetChainId = EDUCHAIN_CHAIN_ID; // Default assumption for DEX/Utility unless specified
       if (agentId === 'bridging') {
           if (['approve', 'deposit'].includes(toolName)) targetChainId = ARBITRUM_CHAIN_ID;
                       // withdraw stays on EDUCHAIN_CHAIN_ID
       } else if (agentId === 'transaction') {
                        if (toolName === 'send_erc20_token') {
-                            // Use assertion after checking property existence (safer)
-                            if (toolInput && typeof toolInput.tokenAddress === 'string' && 
-                                (toolInput as SendErc20TokenInput).tokenAddress?.toLowerCase() === ARBITRUM_EDU_TOKEN_ADDRESS.toLowerCase()) {
+                            // Check if the resolved token address belongs to the set of known Arbitrum tokens
+                            const input = toolInput as SendErc20TokenInput;
+                            const resolvedTokenAddress = resolveTokenIdentifier(input.tokenAddress, 'tokenAddress'); // Resolve first
+                            if (ARBITRUM_TOKEN_ADDRESSES.has(resolvedTokenAddress.toLowerCase())) {
                    targetChainId = ARBITRUM_CHAIN_ID;
+                                console.log(`Target chain set to Arbitrum for known token: ${resolvedTokenAddress}`);
+                            } else {
+                                // Default to EDU Chain for other ERC20s unless specified otherwise
+                                console.log(`Target chain defaulting to EDU Chain for token: ${resolvedTokenAddress}`);
                             }
                        } 
+                       // Note: send_edu implicitly targets EDUCHAIN_CHAIN_ID based on agent setup
                   } 
                   // else DEX/Utility stay on EDUCHAIN_CHAIN_ID
       console.log(`[${agentId}] Determined Target Chain ID for action ${toolName}: ${targetChainId}`);
@@ -444,6 +794,7 @@ export async function POST(request: Request) {
         const infoToolFn = internalInfoTools[toolName as InfoAction];
                       const txPrepToolFn = internalTxPrepTools[toolName as Exclude<TransactionAction, BridgeAction>];
                       const bridgeAction = (toolName === 'approve' || toolName === 'deposit' || toolName === 'withdraw') ? toolName as BridgeAction : null;
+                      const sailfishToolFn = internalSailfishTools[toolName as SailfishAction];
 
         if (infoToolFn) {
                           console.log(`Executing Info Tool: ${toolName}`);
@@ -465,6 +816,113 @@ export async function POST(request: Request) {
                           transactionData = await executeBridgeTool(bridgeAction, toolInput, address); 
                           toolResultContent = transactionData; // Use prepared tx as result for LLM
                          // Bridge prep is usually final step, agent should provide text explanation
+                      } else if (sailfishToolFn) {
+                          const currentSailfishAction = toolName as SailfishAction; // Assert type here
+                          console.log(`Executing Sailfish Tool: ${currentSailfishAction}`);
+                          
+                          // Handle Sailfish tools based on their type - Use asserted variable
+                          if (currentSailfishAction === 'sailfish_is_edu_approved') {
+                              const input = toolInput as { amount?: string, ownerAddress?: string, sourceChain?: string };
+                              if (!input.amount) throw new Error('Amount missing for sailfish_is_edu_approved');
+                              if (!input.ownerAddress) throw new Error('Owner address missing for sailfish_is_edu_approved');
+                              if (!input.sourceChain) throw new Error('Source chain missing for sailfish_is_edu_approved');
+                              
+                              toolResultContent = await sailfishToolFn(input.amount, input.ownerAddress, input.sourceChain);
+                              transactionData = null;
+                              finalAssistantMessage = null;
+                          } else if (currentSailfishAction === 'sailfish_approve_edu') {
+                              const input = toolInput as { amount?: string, sourceChain?: string };
+                              if (!input.amount) throw new Error('Amount missing for sailfish_approve_edu');
+                              if (!input.sourceChain) throw new Error('Source chain missing for sailfish_approve_edu');
+                              
+                              transactionData = await sailfishToolFn(input.amount, input.sourceChain);
+                              toolResultContent = transactionData;
+                          } else if (currentSailfishAction === 'sailfish_bridge_from_arb') {
+                              const input = toolInput as { amount?: string, recipient?: string };
+                              if (!input.amount) throw new Error('Amount missing for sailfish_bridge_from_arb');
+                              if (!input.recipient) throw new Error('Recipient missing for sailfish_bridge_from_arb');
+                              
+                              transactionData = await sailfishToolFn(input.amount, input.recipient);
+                              toolResultContent = transactionData;
+                          } else if (currentSailfishAction === 'sailfish_bridge_from_edu') {
+                              const input = toolInput as { amount?: string, recipient?: string };
+                              if (!input.amount) throw new Error('Amount missing for sailfish_bridge_from_edu');
+                              if (!input.recipient) throw new Error('Recipient missing for sailfish_bridge_from_edu');
+                              
+                              transactionData = await sailfishToolFn(input.amount, input.recipient);
+                              toolResultContent = transactionData;
+                          } else if (currentSailfishAction === 'sailfish_estimate_bridge_fee') {
+                              const input = toolInput as { amount?: string, recipient?: string, sourceChain?: string };
+                              if (!input.amount) throw new Error('Amount missing for sailfish_estimate_bridge_fee');
+                              if (!input.recipient) throw new Error('Recipient missing for sailfish_estimate_bridge_fee');
+                              if (!input.sourceChain) throw new Error('Source chain missing for sailfish_estimate_bridge_fee');
+                              
+                              toolResultContent = await sailfishToolFn(input.amount, input.recipient, input.sourceChain);
+                              transactionData = null;
+                              finalAssistantMessage = null;
+                          } else if (currentSailfishAction === 'sailfish_is_edu_approved_on_bsc') { // Corrected else if
+                              const input = toolInput as { amount?: string, ownerAddress?: string };
+                              if (!input.amount) throw new Error('Amount missing for sailfish_is_edu_approved_on_bsc');
+                              if (!input.ownerAddress) throw new Error('Owner address missing for sailfish_is_edu_approved_on_bsc');
+                              
+                              toolResultContent = await sailfishToolFn(input.amount, input.ownerAddress);
+                              transactionData = null;
+                              finalAssistantMessage = null;
+                          } else if (currentSailfishAction === 'sailfish_approve_edu_on_bsc') {
+                              const input = toolInput as { amount?: string };
+                              // SDK approves MaxUint256, amount might not be needed in input schema? Revisit if needed.
+                              // if (!input.amount) throw new Error('Amount missing for sailfish_approve_edu_on_bsc'); 
+                              
+                              transactionData = await sailfishToolFn(/* input.amount */); // Pass amount if required by backend implementation
+                              toolResultContent = transactionData;
+                          } else if (currentSailfishAction === 'sailfish_estimate_bridge_fee_bsc_to_arb') {
+                              const input = toolInput as { amount?: string, address?: string, gasOnDestination?: string };
+                              if (!input.amount) throw new Error('Amount missing for sailfish_estimate_bridge_fee_bsc_to_arb');
+                              if (!input.address) throw new Error('Address missing for sailfish_estimate_bridge_fee_bsc_to_arb');
+                              
+                              toolResultContent = await sailfishToolFn(input.amount, input.address, input.gasOnDestination);
+                              transactionData = null;
+                              finalAssistantMessage = null;
+                          } else if (currentSailfishAction === 'sailfish_bridge_from_bsc_to_arb') {
+                              const input = toolInput as { amount?: string, address?: string, gasOnDestination?: string };
+                              if (!input.amount) throw new Error('Amount missing for sailfish_bridge_from_bsc_to_arb');
+                              if (!input.address) throw new Error('Address missing for sailfish_bridge_from_bsc_to_arb');
+                              
+                              transactionData = await sailfishToolFn(input.amount, input.address, input.gasOnDestination);
+                              toolResultContent = transactionData;
+                          } else if (currentSailfishAction === 'sailfish_has_enough_edu_on_bsc') {
+                              const input = toolInput as { amount?: string, ownerAddress?: string };
+                              if (!input.amount) throw new Error('Amount missing for sailfish_has_enough_edu_on_bsc');
+                              if (!input.ownerAddress) throw new Error('Owner address missing for sailfish_has_enough_edu_on_bsc');
+                              toolResultContent = await sailfishToolFn(input.amount, input.ownerAddress);
+                              transactionData = null; 
+                              finalAssistantMessage = null;
+                          } else if (currentSailfishAction === 'sailfish_has_enough_bnb') {
+                              const input = toolInput as { fee?: string, ownerAddress?: string };
+                              if (!input.fee) throw new Error('Fee missing for sailfish_has_enough_bnb');
+                              if (!input.ownerAddress) throw new Error('Owner address missing for sailfish_has_enough_bnb');
+                              toolResultContent = await sailfishToolFn(input.fee, input.ownerAddress);
+                              transactionData = null; 
+                              finalAssistantMessage = null;
+                          } else if (currentSailfishAction === 'sailfish_has_enough_edu_on_arb') {
+                              const input = toolInput as { amount?: string, ownerAddress?: string };
+                              if (!input.amount) throw new Error('Amount missing for sailfish_has_enough_edu_on_arb');
+                              if (!input.ownerAddress) throw new Error('Owner address missing for sailfish_has_enough_edu_on_arb');
+                              toolResultContent = await sailfishToolFn(input.amount, input.ownerAddress);
+                              transactionData = null; 
+                              finalAssistantMessage = null;
+                          }
+                            
+                          // Set target chain ID for relevant tools
+                          if (currentSailfishAction === 'sailfish_bridge_from_arb' || 
+                              (currentSailfishAction === 'sailfish_approve_edu' && (toolInput as { sourceChain?: string }).sourceChain === 'arbitrum')) {
+                              targetChainId = ARBITRUM_CHAIN_ID;
+                          } else if (currentSailfishAction === 'sailfish_bridge_from_edu' || 
+                                    (currentSailfishAction === 'sailfish_approve_edu' && (toolInput as { sourceChain?: string }).sourceChain === 'educhain')) {
+                              targetChainId = EDUCHAIN_CHAIN_ID;
+                          } else if (currentSailfishAction === 'sailfish_approve_edu_on_bsc' || currentSailfishAction === 'sailfish_bridge_from_bsc_to_arb') {
+                              targetChainId = 56; // BSC Chain ID
+                          }
                         } else {
                           throw new Error(`Unknown tool name: ${toolName}`);
                       }
@@ -529,7 +987,7 @@ export async function POST(request: Request) {
                console.log('Loop finished without final text, using last tool result.');
                // Use a simple representation of the last result
                finalAssistantMessage = `I reached the step limit after performing the action '${lastToolNameCalled || 'unknown'}. Here is the result:\n\n\`\`\`json\n${JSON.stringify(lastToolResultContent, replacer, 2)}\n\`\`\``;
-                                    } else {
+                                        } else {
                // Fallback if loop ended strangely without text or tool result
                console.error('Loop finished without a final assistant message or last tool result.');
                finalAssistantMessage = "Sorry, something went wrong and I couldn't generate a final response.";
@@ -549,7 +1007,10 @@ export async function POST(request: Request) {
           content: finalAssistantMessage
       };
       // Attach transaction data ONLY if the *last* action was a tx prep/bridge
-      if (transactionData && (internalTxPrepTools[finalAction as Exclude<TransactionAction, BridgeAction>] || ['approve', 'deposit', 'withdraw'].includes(finalAction || ''))) {
+      if (transactionData && (internalTxPrepTools[finalAction as Exclude<TransactionAction, BridgeAction>] || 
+                            ['approve', 'deposit', 'withdraw'].includes(finalAction || '') || 
+                            ['sailfish_approve_edu', 'sailfish_bridge_from_arb', 'sailfish_bridge_from_edu',
+                             'sailfish_approve_edu_on_bsc', 'sailfish_bridge_from_bsc_to_arb'].includes(finalAction || ''))) {
           responsePayload.transactionData = transactionData;
           console.log('Attaching final transaction data to response for action:', finalAction);
       }
@@ -715,8 +1176,12 @@ async function executeTxPrepTool(toolName: Exclude<TransactionAction, BridgeActi
             const resolvedTokenAddress = resolveTokenIdentifier(input.tokenAddress, 'tokenAddress');
             if (!input.recipient) throw new Error('Recipient missing for send_erc20_token');
             if (!input.amount) throw new Error ('Amount missing for send_erc20_token');
-            // Assuming agentKit function handles targetChainId implicitly or takes it if needed
-            return await toolFn(resolvedTokenAddress, input.recipient, input.amount); 
+            // Ensure targetChainId is provided for ERC20 transfers
+            if (targetChainId === null) {
+                throw new Error('Target chain ID is required for send_erc20_token but was not determined.');
+            }
+            // Pass targetChainId as the first argument
+            return await toolFn(targetChainId, resolvedTokenAddress, input.recipient, input.amount); 
         }
         case 'swap_tokens': { 
             const input = toolInput as SwapTokensInput;

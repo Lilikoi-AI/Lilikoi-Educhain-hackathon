@@ -33,6 +33,10 @@ const agentInfo = {
     description: 'Access utilities and ecosystem features',
     // icon: '🛠️',
   },
+  'sailfish-bridging': {
+    name: 'Sailfish Bridging Agent',
+    description: 'Bridge EDU tokens between Arbitrum and EDU Chain using Sailfish SDK',
+  },
 };
 
 // Define the expected shape of the params object
@@ -67,6 +71,7 @@ export default function Page({ params }: AgentPageProps) {
       case 'dex': return 'DEX Agent';
       case 'lp': return 'LP Provisioning Agent';
       case 'utility': return 'Utility Agent';
+      case 'sailfish-bridging': return 'Sailfish Bridging Agent';
       default: return 'DeFi Agent'; // Fallback title
     }
   };
@@ -78,6 +83,7 @@ export default function Page({ params }: AgentPageProps) {
         case 'bridging': return 'Bridge EDU tokens between Arbitrum and EDU Chain.';
         case 'transaction': return 'Send native EDU or ERC20 tokens on EDU Chain or Arbitrum.';
         case 'dex': return 'Swap, wrap, or unwrap tokens on the EDU Chain DEX.';
+        case 'sailfish-bridging': return 'Bridge EDU tokens between Arbitrum and EDU Chain using the Sailfish SDK.';
         // Add descriptions for other agents
         default: return 'Your assistant for DeFi tasks.';
       }
